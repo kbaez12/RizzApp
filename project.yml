@@ -1,0 +1,40 @@
+name: RizzApp
+
+options:
+  bundleIdPrefix: com.placeholder
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+
+targets:
+  RizzApp:
+    type: application
+    platform: iOS
+    sources:
+      - RizzApp
+    settings:
+      base:
+        # Placeholder bundle ID — replace before App Store Connect setup.
+        PRODUCT_BUNDLE_IDENTIFIER: com.placeholder.rizzapp
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_UILaunchScreen_Generation: true
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_CFBundleDisplayName: RizzApp
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: true
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+
+  RizzAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - RizzAppTests
+    dependencies:
+      - target: RizzApp
