@@ -1,16 +1,20 @@
-// POST /functions/v1/generate — Phase 4B.
+// POST /functions/v1/generate
 //
 // Publishable-key authentication via @supabase/server (withSupabase
 // validates the `apikey` header against the project's publishable key with
 // a timing-safe comparison; verify_jwt = false remains correct for this
 // no-user-JWT flow). Quota is enforced atomically in Postgres through a
-// reserve → work → commit/release pipeline. Responses are STILL CANNED —
-// OpenAI arrives in Phase 5, slotting between reserve and commit.
+// reserve → generate → commit/release pipeline: an OpenAI failure refunds
+// the user's usage.
 //
-// Logging policy: request id, status, duration, category, kind. NEVER
-// conversation text, base64, or generated replies.
+// Logging policy: request id, status, duration, category, input kind,
+// model, token counts. NEVER conversation text, base64, prompts, or
+// generated replies.
 
 import { withSupabase } from "@supabase/server";
+import { produceReplies } from "../_shared/generation.ts";
+import { configuredModel } from "../_shared/openai.ts";
+import { enforceRateLimit } from "../_shared/rate_limit.ts";
 import {
   classifyAction,
   type GenerationRequestBody,
@@ -58,6 +62,8 @@ function simulatedResponse(scenario: string, req: Request): Response | null {
   }
 }
 
+/** Canned replies are retained ONLY for the dev "canned" debug scenario, so
+ * quota/idempotency integration tests can run without spending OpenAI calls. */
 function cannedResponses(body: GenerationRequestBody) {
   return body.refinement
     ? CANNED_REFINED[body.refinement] ?? CANNED_RESPONSES
@@ -70,7 +76,12 @@ export default {
     const requestLogId = crypto.randomUUID();
     const devSimulation = Deno.env.get("DEV_ERROR_SIMULATION") === "true";
 
-    const log = (status: number, category: string, kind?: string) => {
+    const log = (
+      status: number,
+      category: string,
+      kind?: string,
+      metrics?: Record<string, unknown>,
+    ) => {
       console.log(JSON.stringify({
         requestLogId,
         fn: "generate",
@@ -78,6 +89,7 @@ export default {
         category,
         kind: kind ?? null,
         ms: Date.now() - startedAt,
+        ...(metrics ?? {}),
       }));
     };
 
@@ -108,6 +120,15 @@ export default {
         {},
         req,
       );
+    }
+
+    // Cheap per-installation rate limit before any expensive work.
+    const rate = await enforceRateLimit(ctx.supabaseAdmin, installationId!);
+    if (!rate.allowed) {
+      log(429, "rate_limited");
+      return errorJson(429, "RATE_LIMITED", "Too many requests.", {
+        extraHeaders: { "Retry-After": String(rate.retryAfterSeconds) },
+      }, req);
     }
 
     const contentLength = Number(req.headers.get("content-length") ?? "0");
@@ -162,13 +183,28 @@ export default {
       }, req);
     }
 
-    // ---- WORK (Phase 4B: canned; Phase 5: OpenAI goes right here) ----
+    // ---- GENERATE (real OpenAI; refunds on failure) ----
     try {
       if (scenario === "fail_after_reserve" && devSimulation) {
         throw new Error("simulated generation failure");
       }
 
-      const responses = cannedResponses(body);
+      let responses;
+      let metrics: Record<string, unknown> = {};
+      if (scenario === "canned" && devSimulation) {
+        // Dev-only: exercises quota/idempotency without spending API calls.
+        responses = cannedResponses(body);
+      } else {
+        const produced = await produceReplies(body);
+        responses = produced.responses;
+        metrics = {
+          model: configuredModel(),
+          inputTokens: produced.inputTokens,
+          outputTokens: produced.outputTokens,
+          retried: produced.retried,
+          remainingProblems: produced.remainingProblems,
+        };
+      }
 
       // ---- COMMIT ----
       const { data: commit, error: commitError } = await ctx.supabaseAdmin
@@ -179,11 +215,11 @@ export default {
         // Work succeeded but commit failed — return the result anyway with
         // the reserve-time usage; reservation will expire → auto-release
         // (we favor the user over double-charging).
-        log(200, "commit_failed", body.input?.kind);
+        log(200, "commit_failed", body.input?.kind, metrics);
         return json(200, { responses, usage: reservation.usage }, req);
       }
 
-      log(200, actionKind, body.input?.kind);
+      log(200, actionKind, body.input?.kind, metrics);
       return json(200, { responses, usage: commit.usage }, req);
     } catch {
       // ---- RELEASE / REFUND: user never loses quota to a server failure.

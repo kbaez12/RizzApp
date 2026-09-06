@@ -45,8 +45,10 @@ async function callGenerate(options: CallOptions): Promise<Response> {
     "Content-Type": "application/json",
     apikey: options.apikey ?? KEY,
     "x-installation-id": options.installationId ?? crypto.randomUUID(),
+    // Quota/idempotency tests use canned replies so they never spend
+    // OpenAI calls. Response quality is judged with quality_check.ts.
+    "x-debug-scenario": options.scenario ?? "canned",
   };
-  if (options.scenario) headers["x-debug-scenario"] = options.scenario;
   return await fetch(`${BASE}/functions/v1/generate`, {
     method: "POST",
     headers,
