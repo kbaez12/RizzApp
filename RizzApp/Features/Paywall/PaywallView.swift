@@ -1,16 +1,18 @@
 import SwiftUI
 
-/// Mock paywall. Plans come from `SubscriptionServicing` (never hard-coded
-/// in the view) so Phase 7 can swap in RevenueCat offerings with localized
-/// pricing. Purchases intentionally surface a "not connected" development
-/// message — no fake successful purchases, no dark patterns.
+/// Paywall. Plans and prices come from `SubscriptionServicing` (RevenueCat
+/// offerings with localized Apple pricing in live mode) — never hard-coded
+/// here. No timers, no fake discounts, no pressure.
 struct PaywallView: View {
     @Environment(\.services) private var services
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     @State private var plans: [SubscriptionPlan] = []
     @State private var selectedPlanID: String?
-    @State private var showsNotConnectedAlert = false
+    @State private var isLoading = true
+    @State private var isPurchasing = false
+    @State private var errorMessage: String?
 
     var body: some View {
         ZStack {
@@ -20,9 +22,11 @@ struct PaywallView: View {
                 header
 
                 VStack(spacing: Spacing.md) {
-                    if plans.isEmpty {
+                    if isLoading {
                         LoadingDots()
-                            .frame(height: 120)
+                            .frame(height: 140)
+                    } else if plans.isEmpty {
+                        unavailableState
                     } else {
                         ForEach(plans) { plan in
                             planCard(plan)
@@ -30,14 +34,28 @@ struct PaywallView: View {
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: Spacing.md)
 
                 VStack(spacing: Spacing.md) {
-                    Button("Continue") {
-                        showsNotConnectedAlert = true
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(Typography.caption)
+                            .foregroundStyle(Theme.accent)
+                            .multilineTextAlignment(.center)
+                            .transition(.opacity)
+                    }
+
+                    Button {
+                        Task { await purchase() }
+                    } label: {
+                        if isPurchasing {
+                            LoadingDots()
+                        } else {
+                            Text("Continue")
+                        }
                     }
                     .buttonStyle(.primary)
-                    .disabled(selectedPlanID == nil)
+                    .disabled(selectedPlanID == nil || isPurchasing)
                     .opacity(selectedPlanID == nil ? 0.4 : 1)
 
                     footerLinks
@@ -49,13 +67,7 @@ struct PaywallView: View {
         }
         .task {
             guard plans.isEmpty else { return }
-            plans = (try? await services.subscription.offerings()) ?? []
-            selectedPlanID = plans.last?.id
-        }
-        .alert("Subscriptions aren't connected yet", isPresented: $showsNotConnectedAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("This is a development build. Purchases arrive with RevenueCat in a later phase.")
+            await loadPlans()
         }
         .overlay(alignment: .topTrailing) {
             Button {
@@ -64,24 +76,25 @@ struct PaywallView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Theme.textSecondary)
-                    .padding(Spacing.md)
+                    .frame(width: 44, height: 44)
             }
             .accessibilityLabel("Close")
         }
     }
 
+    // MARK: - Sections
+
     private var header: some View {
-        VStack(spacing: Spacing.sm) {
+        VStack(spacing: Spacing.md) {
             Text("RizzApp Plus")
                 .font(Typography.title)
                 .foregroundStyle(Theme.textPrimary)
 
             VStack(alignment: .leading, spacing: Spacing.sm) {
                 benefit("150 conversation analyses a month")
-                benefit("All six goals and refinements")
+                benefit("Every goal and every refinement")
                 benefit("Cancel anytime")
             }
-            .padding(.top, Spacing.sm)
         }
     }
 
@@ -93,7 +106,22 @@ struct PaywallView: View {
             Text(text)
                 .font(Typography.subheadline)
                 .foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var unavailableState: some View {
+        VStack(spacing: Spacing.md) {
+            Text("Plans aren't available right now.")
+                .font(Typography.subheadline)
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+            Button("Try Again") {
+                Task { await loadPlans() }
+            }
+            .buttonStyle(.pill)
+        }
+        .frame(height: 140)
     }
 
     private func planCard(_ plan: SubscriptionPlan) -> some View {
@@ -101,7 +129,7 @@ struct PaywallView: View {
         return Button {
             selectedPlanID = plan.id
         } label: {
-            HStack {
+            HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text(plan.name)
                         .font(Typography.headline)
@@ -112,10 +140,11 @@ struct PaywallView: View {
                             .foregroundStyle(Theme.textSecondary)
                     }
                 }
-                Spacer()
+                Spacer(minLength: Spacing.sm)
                 Text("\(plan.price)/\(plan.period)")
                     .font(Typography.headline)
                     .foregroundStyle(isSelected ? Theme.accent : Theme.textPrimary)
+                    .multilineTextAlignment(.trailing)
             }
             .padding(Spacing.md)
             .background(
@@ -133,16 +162,73 @@ struct PaywallView: View {
 
     private var footerLinks: some View {
         HStack(spacing: Spacing.lg) {
-            Button("Restore") { showsNotConnectedAlert = true }
-            Button("Terms") {}      // Placeholder — production URL in Phase 10.
-            Button("Privacy") {}    // Placeholder — production URL in Phase 10.
+            Button("Restore") {
+                Task { await restore() }
+            }
+            Button("Terms") { openURL(LegalLinks.terms) }
+            Button("Privacy") { openURL(LegalLinks.privacy) }
         }
         .font(Typography.caption)
         .foregroundStyle(Theme.textSecondary)
+        .disabled(isPurchasing)
+    }
+
+    // MARK: - Actions
+
+    private func loadPlans() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            plans = try await services.subscription.offerings()
+            // Preselect yearly (last) — better value, no pressure applied.
+            selectedPlanID = plans.last?.id
+        } catch {
+            plans = []
+            errorMessage = friendlyMessage(for: error)
+        }
+        isLoading = false
+    }
+
+    private func purchase() async {
+        guard let plan = plans.first(where: { $0.id == selectedPlanID }) else { return }
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            let purchased = try await services.subscription.purchase(plan)
+            if purchased {
+                dismiss()
+            }
+            // User cancelled: no message, no nagging.
+        } catch {
+            errorMessage = friendlyMessage(for: error)
+        }
+        isPurchasing = false
+    }
+
+    private func restore() async {
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            let restored = try await services.subscription.restorePurchases()
+            if restored {
+                dismiss()
+            } else {
+                errorMessage = "No previous subscription found on this Apple ID."
+            }
+        } catch {
+            errorMessage = friendlyMessage(for: error)
+        }
+        isPurchasing = false
+    }
+
+    private func friendlyMessage(for error: Error) -> String {
+        (error as? SubscriptionError)?.displayMessage
+            ?? "Something went wrong. Please try again."
     }
 }
 
 #Preview {
     PaywallView()
+        .environment(\.services, .mock)
         .preferredColorScheme(.dark)
 }

@@ -14,12 +14,13 @@ struct AppServices {
         subscription: MockSubscriptionService()
     )
 
-    /// Live services against a Supabase environment. Phase 4A: generation
-    /// and usage hit real endpoints (canned server data); subscriptions
-    /// remain mocked until RevenueCat (Phase 7).
+    /// Live services: real backend generation/usage and real RevenueCat
+    /// subscriptions. The installation ID is shared between the backend
+    /// (quota) and RevenueCat (app user ID) so the webhook can link them.
     static func live(config: APIConfig) -> AppServices {
         let identity = KeychainInstallationIdentityService()
-        let client = APIClient(config: config, installationID: identity.installationID)
+        let installationID = identity.installationID
+        let client = APIClient(config: config, installationID: installationID)
         let usage = LiveUsageService(client: client)
         let generation = LiveGenerationService(client: client) { status in
             usage.apply(status)
@@ -27,7 +28,10 @@ struct AppServices {
         return AppServices(
             generation: generation,
             usage: usage,
-            subscription: MockSubscriptionService()
+            subscription: RevenueCatSubscriptionService(
+                publicSDKKey: config.revenueCatPublicKey,
+                installationID: installationID
+            )
         )
     }
 

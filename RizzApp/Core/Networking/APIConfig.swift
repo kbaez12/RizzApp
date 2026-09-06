@@ -39,6 +39,10 @@ enum AppConfig {
 struct APIConfig {
     let baseURL: URL
     let publishableKey: String
+    /// RevenueCat **public** SDK key (safe in the client). The RevenueCat
+    /// secret key must never appear here — it belongs only in RevenueCat's
+    /// dashboard/webhook configuration.
+    var revenueCatPublicKey: String = "appl_PASTE_REVENUECAT_PUBLIC_SDK_KEY"
 
     /// Local Supabase stack via CLI (`supabase start` + `functions serve`).
     /// Loopback traffic is exempt from ATS, so plain http works here —

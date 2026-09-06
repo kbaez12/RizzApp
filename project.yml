@@ -12,12 +12,21 @@ settings:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 
+packages:
+  # Only third-party dependency in the project.
+  RevenueCat:
+    url: https://github.com/RevenueCat/purchases-ios
+    from: 5.0.0
+
 targets:
   RizzApp:
     type: application
     platform: iOS
     sources:
       - RizzApp
+    dependencies:
+      - package: RevenueCat
+        product: RevenueCat
     settings:
       base:
         # Placeholder bundle ID — replace before App Store Connect setup.

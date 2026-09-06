@@ -12,3 +12,8 @@ verify_jwt = false
 
 [functions.usage]
 verify_jwt = false
+
+# Called by RevenueCat, not by our app: authenticated with a shared secret
+# in the Authorization header (see REVENUECAT_WEBHOOK_SECRET).
+[functions.revenuecat-webhook]
+verify_jwt = false

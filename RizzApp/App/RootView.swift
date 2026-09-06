@@ -24,6 +24,7 @@ struct RootView: View {
         .task {
             // No-op for mocks; fetches backend usage in live mode.
             await services.usage.refreshIfNeeded()
+            await services.subscription.refresh()
         }
     }
 

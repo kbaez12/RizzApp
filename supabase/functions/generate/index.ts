@@ -174,13 +174,19 @@ export default {
     }
 
     if (reservation.outcome === "duplicate") {
-      // Retried logical request: no new charge; return the same canned
-      // result shape with current authoritative usage.
-      log(200, "duplicate_request", body.input?.kind);
-      return json(200, {
-        responses: cannedResponses(body),
-        usage: reservation.usage,
-      }, req);
+      // Idempotent retry: quota was already decided. We do not store
+      // generated replies (privacy), so we regenerate without charging.
+      // Dev "canned" scenario still returns the fixture set.
+      try {
+        const responses = scenario === "canned" && devSimulation
+          ? cannedResponses(body)
+          : (await produceReplies(body)).responses;
+        log(200, "duplicate_request", body.input?.kind);
+        return json(200, { responses, usage: reservation.usage }, req);
+      } catch {
+        log(500, "duplicate_regenerate_failed", body.input?.kind);
+        return errorJson(500, "GENERATION_FAILED", "Generation failed.", {}, req);
+      }
     }
 
     // ---- GENERATE (real OpenAI; refunds on failure) ----
