@@ -8,9 +8,9 @@ struct RizzAppApp: App {
         WindowGroup {
             RootView()
                 .environment(flowModel)
-                // Phase 2: all-mock services. Live implementations are
-                // swapped in here in Phases 4–7.
-                .environment(\.services, .mock)
+                // Mock vs live is decided once in AppServices.current,
+                // driven by AppConfig.serviceMode.
+                .environment(\.services, AppServices.current)
                 .preferredColorScheme(.dark)
         }
     }

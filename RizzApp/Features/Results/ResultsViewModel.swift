@@ -19,6 +19,12 @@ final class ResultsViewModel {
     /// Friendly, non-technical message for refinement failures
     /// (previous results stay visible).
     private(set) var inlineError: String?
+    /// Friendly copy for the full-screen failed state.
+    private(set) var failureMessage = ResultsViewModel.genericFailureMessage
+
+    static let genericFailureMessage = "Couldn't come up with anything. Try again."
+    private static let offlineMessage = "No internet connection. Check your network and try again."
+    private static let timeoutMessage = "That took too long. Give it another try."
 
     var remainingAnalyses: Int { usage.status.remaining }
 
@@ -56,7 +62,30 @@ final class ResultsViewModel {
             usage.consumeFullGeneration()
             state = .loaded
         } catch {
-            state = .failed
+            handleGenerateFailure(error)
+        }
+    }
+
+    /// Error → friendly UI state mapping happens here, at the ViewModel
+    /// boundary. Raw backend/system errors never reach views.
+    private func handleGenerateFailure(_ error: Error) {
+        if case APIError.quotaExceeded = error {
+            // Server-side refusal is authoritative — present the paywall.
+            // Restore previous results if we had any (e.g. Generate 3 More).
+            state = responses.isEmpty ? .failed : .loaded
+            failureMessage = Self.genericFailureMessage
+            onQuotaExhausted()
+            return
+        }
+        failureMessage = friendlyMessage(for: error)
+        state = .failed
+    }
+
+    private func friendlyMessage(for error: Error) -> String {
+        switch error {
+        case APIError.offline: Self.offlineMessage
+        case APIError.timeout: Self.timeoutMessage
+        default: Self.genericFailureMessage
         }
     }
 
@@ -74,7 +103,13 @@ final class ResultsViewModel {
             )
             usage.consumeRefinement()
         } catch {
-            inlineError = "That didn't work. Give it another try."
+            if case APIError.quotaExceeded = error {
+                onQuotaExhausted()
+            } else if case APIError.offline = error {
+                inlineError = Self.offlineMessage
+            } else {
+                inlineError = "That didn't work. Give it another try."
+            }
         }
         isRefining = false
     }

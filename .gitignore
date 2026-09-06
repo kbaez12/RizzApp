@@ -11,3 +11,9 @@ build/
 
 # macOS
 .DS_Store
+
+# Supabase — local-only files; never commit env/secrets
+supabase/.temp/
+supabase/.env
+supabase/functions/.env
+.env

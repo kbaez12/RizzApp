@@ -13,6 +13,34 @@ struct AppServices {
         usage: MockUsageStore(),
         subscription: MockSubscriptionService()
     )
+
+    /// Live services against a Supabase environment. Phase 4A: generation
+    /// and usage hit real endpoints (canned server data); subscriptions
+    /// remain mocked until RevenueCat (Phase 7).
+    static func live(config: APIConfig) -> AppServices {
+        let identity = KeychainInstallationIdentityService()
+        let client = APIClient(config: config, installationID: identity.installationID)
+        let usage = LiveUsageService(client: client)
+        let generation = LiveGenerationService(client: client) { status in
+            usage.apply(status)
+        }
+        return AppServices(
+            generation: generation,
+            usage: usage,
+            subscription: MockSubscriptionService()
+        )
+    }
+
+    /// The single wiring point — resolved once from `AppConfig.serviceMode`.
+    /// Views and ViewModels never know which mode is active.
+    static let current: AppServices = {
+        switch AppConfig.serviceMode {
+        case .mock:
+            return .mock
+        case .liveDevelopment:
+            return .live(config: AppConfig.api)
+        }
+    }()
 }
 
 private struct AppServicesKey: EnvironmentKey {

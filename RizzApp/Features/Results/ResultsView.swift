@@ -49,7 +49,7 @@ struct ResultsView: View {
             case .analyzing:
                 AnalyzingView()
             case .failed:
-                errorState(message: "Couldn't come up with anything. Try again.", retryLabel: "Try Again") {
+                errorState(message: model.failureMessage, retryLabel: "Try Again") {
                     Task { await model.generate() }
                 }
             case .loaded:

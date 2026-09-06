@@ -1,0 +1,14 @@
+# Supabase project configuration (minimal). Running `supabase init` on a
+# machine with the CLI will expand this; keep the [functions.*] sections.
+project_id = "rizzapp"
+
+# Our clients send the publishable key via the `apikey` header and have no
+# user JWTs (no accounts by design), so per-function JWT verification is off.
+# The functions themselves validate the apikey header, installation ID, and
+# request shape. App Attest + rate limiting arrive in Phase 8.
+
+[functions.generate]
+verify_jwt = false
+
+[functions.usage]
+verify_jwt = false

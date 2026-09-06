@@ -21,4 +21,12 @@ protocol UsageServicing: AnyObject {
     /// Charges a refinement: uses the free budget first (2 per analysis),
     /// then falls back to consuming a full generation.
     func consumeRefinement()
+
+    /// Fetches fresh usage from the backend when applicable. Mock/offline
+    /// implementations use the default no-op.
+    func refreshIfNeeded() async
+}
+
+extension UsageServicing {
+    func refreshIfNeeded() async {}
 }
