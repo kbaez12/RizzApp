@@ -25,8 +25,13 @@ protocol UsageServicing: AnyObject {
     /// Fetches fresh usage from the backend when applicable. Mock/offline
     /// implementations use the default no-op.
     func refreshIfNeeded() async
+
+    /// Marks cached usage stale so the next refresh re-fetches — used after
+    /// a purchase, when the backend allowance has changed.
+    func invalidate()
 }
 
 extension UsageServicing {
     func refreshIfNeeded() async {}
+    func invalidate() {}
 }

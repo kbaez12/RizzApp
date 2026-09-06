@@ -1,17 +1,32 @@
 # RizzApp (working title)
 
-SwiftUI iOS app that helps users craft replies to dating/text conversations
-using AI. Screenshots/text are processed by our backend; no accounts required.
+A simple iOS app: upload a screenshot or paste a conversation, pick a
+goal, get three AI replies (Natural / Bolder / Make a Move), copy one.
+Five free analyses, then a Plus subscription.
+
+No accounts. No profiles. No conversation history.
 
 - Minimum iOS: 17.0
-- Architecture: MVVM, feature-oriented, `@Observable` view models
-- Project generation: [XcodeGen](https://github.com/yonaskolb/XcodeGen) via `project.yml`
-  (no `.xcodeproj` is committed)
+- SwiftUI, `@Observable`, `NavigationStack`, PhotosPicker
+- Backend: Supabase Edge Functions + Postgres quota
+- AI: OpenAI Responses API (`gpt-5.6-terra`, configurable), `store: false`
+- Subscriptions: RevenueCat + StoreKit, entitlement `plus`
+
+## Mock vs live
+
+Flip one line in `RizzApp/Core/Networking/APIConfig.swift`:
+
+```swift
+static let serviceMode: ServiceMode = .mock            // offline UI
+static let serviceMode: ServiceMode = .liveDevelopment // real backend
+```
+
+Views never know which mode is running. Mock mode keeps
+`MockGenerationService` / `MockUsageStore` / `MockSubscriptionService`.
 
 ## Building (macOS required)
 
-This repo is authored on Windows/Cursor; **nothing here has been compiled yet**.
-On a Mac:
+This repo is authored on Windows. **Nothing here has been compiled.**
 
 ```bash
 brew install xcodegen
@@ -19,91 +34,51 @@ xcodegen generate
 open RizzApp.xcodeproj
 ```
 
-Then in Xcode:
+See [LAUNCH.md](LAUNCH.md) for signing, secrets, subscriptions, and
+TestFlight. See the same file for the URLs, bundle ID, and icon you
+must provide before submission.
 
-1. Select the `RizzApp` scheme and an iOS 17+ simulator, and build (⌘B).
-2. Signing: set your development team under Signing & Capabilities
-   (bundle ID `com.placeholder.rizzapp` is a placeholder — replace before
-   App Store Connect setup).
-3. Run the unit tests (⌘U) — `RizzAppTests` contains a decoding smoke test.
+## Local backend
 
-## Backend (Supabase Edge Functions)
-
-Phase 4A: the functions return **canned data only** (no AI, no database).
-Mock vs live is selected in `RizzApp/Core/Networking/APIConfig.swift`
-(`AppConfig.serviceMode`) — views never know which mode is active.
-
-### Local development (requires Supabase CLI + Docker)
+Needs the Supabase CLI and Docker.
 
 ```bash
-# one-time
-brew install supabase/tap/supabase     # or see supabase.com/docs for Windows
 cp supabase/functions/.env.example supabase/functions/.env
+# put a real OPENAI_API_KEY in .env (never commit it)
 
-# run the local stack + functions
 supabase start
-supabase db reset        # applies supabase/migrations/ + seed.sql (dev fixtures)
+supabase db reset
 supabase functions serve --env-file supabase/functions/.env
 ```
 
-Quota (Phase 4B) is enforced server-side in Postgres: atomic
-reserve → work → commit/release with idempotency on
-(installation_id, request_id). Allowances live in the `usage_config` table
-(free 5 lifetime / plus 150 monthly / 2 free refinements per analysis) —
-change them with an UPDATE, not code. Dev fixtures in `supabase/seed.sql`
-provide a Plus test installation (`cccccccc-…`) and an exhausted free one
-(`eeeeeeee-…`). Stale reservations expire after 2 minutes and are released
-opportunistically on the next request; add scheduled cleanup before
-production (documented in the migration).
-
-Integration tests (needs the local stack running):
+Paste the printed publishable key into `APIConfig.localDevelopment`.
+Local HTTP works from the iOS **simulator** only.
 
 ```bash
+deno test supabase/functions/_shared/contracts_test.ts
+deno test supabase/functions/_shared/cringe_guard_test.ts
+
 INTEGRATION=true SUPABASE_URL=http://127.0.0.1:54321 \
-PUBLISHABLE_KEY=<local publishable key> \
+PUBLISHABLE_KEY=<key> \
 deno test --allow-net --allow-env supabase/functions/tests/integration_test.ts
+
+# Real AI quality pass (spends money):
+INTEGRATION=true SUPABASE_URL=http://127.0.0.1:54321 \
+PUBLISHABLE_KEY=<key> \
+deno run --allow-net --allow-env supabase/functions/tests/quality_check.ts
 ```
-
-Then:
-1. `supabase start` prints the local API URL (default `http://127.0.0.1:54321`)
-   and a publishable/anon key — paste the key into
-   `APIConfig.localDevelopment` in `APIConfig.swift`.
-2. Set `AppConfig.serviceMode = .liveDevelopment`.
-3. Local HTTP works from the iOS **simulator** only (loopback is ATS-exempt);
-   a physical device cannot reach your machine's 127.0.0.1.
-
-Error simulation (DEBUG builds + local `.env` only): set
-`AppConfig.debugErrorScenario` to `"quota"`, `"unauthorized"`,
-`"rate_limit"`, `"server_error"`, `"invalid_request"`, or `"malformed"`.
-
-Edge function tests: `deno test supabase/functions/_shared/contracts_test.ts`
-
-### Remote dev project
-
-```bash
-supabase login
-supabase link --project-ref YOUR-PROJECT-REF
-supabase functions deploy generate
-supabase functions deploy usage
-```
-
-Fill `APIConfig.remoteDevelopment` with the project URL and publishable key
-(Dashboard → Settings → API). The publishable key is client-safe; secret /
-service-role keys must never enter the iOS app.
 
 ## Structure
 
 ```
-RizzApp/
-  App/            entry point, flow model, navigation root
-  Core/Models/    value types shared across features (API-contract Codables)
-  DesignSystem/   theme tokens + reusable components
-  Features/       one folder per screen (Home, Input, GoalSelection, ...)
-RizzAppTests/     unit tests
+RizzApp/          SwiftUI app
+RizzAppTests/     unit tests (no network)
+supabase/         Edge Functions, migrations, seed
+LAUNCH.md         everything you do by hand to ship
 project.yml       XcodeGen spec
 ```
 
-## Security note
+## Security
 
-No private keys (OpenAI, Supabase service role, RevenueCat secret) ever ship
-in this client. The app talks only to our backend.
+No OpenAI key, Supabase service-role key, or RevenueCat secret is in
+this client. The app talks only to our backend. See LAUNCH.md §7.

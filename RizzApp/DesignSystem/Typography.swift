@@ -1,20 +1,21 @@
 import SwiftUI
 
-/// Typography tokens. Headings use the rounded design for a warm, premium feel;
-/// body text stays on the default design for readability.
+/// Typography tokens. Headings use the rounded design for a warm, premium
+/// feel; body text stays on the default design for readability. All sizes
+/// are Dynamic Type–relative so they scale with the user's settings.
 enum Typography {
     /// Hero heading on Home ("What'd they say?").
-    static let display = Font.system(size: 38, weight: .bold, design: .rounded)
+    static let display = Font.system(.largeTitle, design: .rounded).weight(.bold)
     /// Screen titles ("What's the move?").
-    static let title = Font.system(size: 28, weight: .bold, design: .rounded)
+    static let title = Font.system(.title, design: .rounded).weight(.bold)
     /// Section headers and card labels.
-    static let headline = Font.system(size: 19, weight: .semibold, design: .rounded)
+    static let headline = Font.system(.headline, design: .rounded)
     /// Primary reading text (generated responses, descriptions).
-    static let body = Font.system(size: 17, weight: .regular)
+    static let body = Font.system(.body)
     /// Secondary information under titles.
-    static let subheadline = Font.system(size: 15, weight: .regular)
+    static let subheadline = Font.system(.subheadline)
     /// Small labels — strategy tags, footers, usage counters.
-    static let caption = Font.system(size: 13, weight: .medium)
+    static let caption = Font.system(.caption).weight(.medium)
     /// Button labels.
-    static let button = Font.system(size: 17, weight: .semibold, design: .rounded)
+    static let button = Font.system(.headline, design: .rounded)
 }

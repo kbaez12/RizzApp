@@ -83,6 +83,7 @@ struct ResultsView: View {
                     Task { await model.generate() }
                 }
                 .buttonStyle(.secondary)
+                .disabled(model.isRefining)
                 .padding(.top, Spacing.sm)
 
                 Text(usageFootnote(model))

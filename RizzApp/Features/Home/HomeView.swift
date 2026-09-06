@@ -21,6 +21,8 @@ struct HomeView: View {
                     Text("What'd they say?")
                         .font(Typography.display)
                         .foregroundStyle(Theme.textPrimary)
+                        .minimumScaleFactor(0.7)
+                        .lineLimit(2)
 
                     Text("Drop the conversation. Get the reply.")
                         .font(Typography.subheadline)

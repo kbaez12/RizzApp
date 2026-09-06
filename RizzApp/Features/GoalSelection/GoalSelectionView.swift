@@ -7,7 +7,9 @@ import SwiftUI
 struct GoalSelectionView: View {
     @Environment(AppFlowModel.self) private var flow
     @Environment(\.services) private var services
+    @Environment(\.privacyConsent) private var privacyConsent
     @State private var selectedGoal: ResponseGoal?
+    @State private var showsPrivacyDisclosure = false
 
     private let columns = [
         GridItem(.flexible(), spacing: Spacing.md),
@@ -40,12 +42,7 @@ struct GoalSelectionView: View {
                 .scrollIndicators(.hidden)
 
                 Button("Continue") {
-                    guard let selectedGoal else { return }
-                    if services.usage.canStartFullGeneration() {
-                        flow.continueToResults(goal: selectedGoal)
-                    } else {
-                        flow.isShowingPaywall = true
-                    }
+                    attemptContinue()
                 }
                 .buttonStyle(.primary)
                 .disabled(selectedGoal == nil)
@@ -56,6 +53,33 @@ struct GoalSelectionView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .sensoryFeedback(.selection, trigger: selectedGoal)
+        .sheet(isPresented: $showsPrivacyDisclosure) {
+            PrivacyDisclosureView {
+                privacyConsent.acknowledge()
+                showsPrivacyDisclosure = false
+                proceedAfterConsent()
+            }
+            .interactiveDismissDisabled()
+        }
+    }
+
+    /// First-use AI disclosure is the last gate before a real generation.
+    private func attemptContinue() {
+        guard selectedGoal != nil else { return }
+        if privacyConsent.hasAcknowledged {
+            proceedAfterConsent()
+        } else {
+            showsPrivacyDisclosure = true
+        }
+    }
+
+    private func proceedAfterConsent() {
+        guard let selectedGoal else { return }
+        if services.usage.canStartFullGeneration() {
+            flow.continueToResults(goal: selectedGoal)
+        } else {
+            flow.isShowingPaywall = true
+        }
     }
 }
 
