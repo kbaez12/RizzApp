@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Hosts the navigation stack and modal sheets. Route destinations are
-/// placeholders until each feature screen is built in Phase 2.
+/// Hosts the navigation stack and modal sheets (Settings, Paywall).
 struct RootView: View {
     @Environment(AppFlowModel.self) private var flow
 
@@ -15,10 +14,10 @@ struct RootView: View {
                 }
         }
         .sheet(isPresented: $flow.isShowingSettings) {
-            placeholder("Settings")
+            SettingsView()
         }
         .sheet(isPresented: $flow.isShowingPaywall) {
-            placeholder("Paywall")
+            PaywallView()
         }
         .tint(Theme.accent)
     }
@@ -26,25 +25,10 @@ struct RootView: View {
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
-        case .screenshotPreview: placeholder("Screenshot Preview")
-        case .pasteText: placeholder("Paste Text")
-        case .goalSelection: placeholder("Goal Selection")
-        case .results: placeholder("Results")
-        }
-    }
-
-    /// Temporary stand-in for screens built in Phase 2.
-    private func placeholder(_ title: String) -> some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
-            VStack(spacing: Spacing.md) {
-                Text(title)
-                    .font(Typography.title)
-                    .foregroundStyle(Theme.textPrimary)
-                Text("Coming in Phase 2")
-                    .font(Typography.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-            }
+        case .screenshotPreview: ScreenshotPreviewView()
+        case .pasteText: PasteTextView()
+        case .goalSelection: GoalSelectionView()
+        case .results: ResultsView()
         }
     }
 }
