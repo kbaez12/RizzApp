@@ -68,7 +68,7 @@ final class APIClientTests: XCTestCase {
           "usage": { "remaining": 4, "limit": 5, "tier": "free", "refinements_remaining": 2 }
         }
         """)
-        let request = try GenerationRequest(input: .pastedText("hi"), goal: .flirty)
+        let request = try GenerationRequest(input: .pastedText("hi"), goal: .flirty, requestID: UUID())
         let result: GenerationResult = try await client.send(.generate(request))
 
         XCTAssertEqual(result.responses.count, 3)

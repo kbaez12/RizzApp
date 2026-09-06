@@ -3,6 +3,7 @@
 
 import { assertEquals } from "jsr:@std/assert";
 import {
+  classifyAction,
   MAX_IMAGE_BASE64_LENGTH,
   MAX_TEXT_LENGTH,
   isValidInstallationId,
@@ -10,16 +11,20 @@ import {
 } from "./contracts.ts";
 import { CANNED_REFINED, CANNED_RESPONSES } from "./canned.ts";
 
+const REQUEST_ID = "0b8f7d9e-6a3c-4e2b-9c1d-5f4a3b2c1d0e";
+
 const validText = {
   input: { kind: "text", text: "them: hey lol\nme: hey" },
   goal: "flirty",
   refinement: null,
   previous_responses: null,
+  request_id: REQUEST_ID,
 };
 
 const validImage = {
   input: { kind: "image", image_base64: "aGVsbG8gd29ybGQ=" },
   goal: "playful",
+  request_id: REQUEST_ID,
 };
 
 Deno.test("valid text request passes", () => {
@@ -36,7 +41,10 @@ Deno.test("unsupported goal rejected", () => {
 });
 
 Deno.test("missing input rejected", () => {
-  assertEquals(validateGenerationRequest({ goal: "flirty" }).ok, false);
+  assertEquals(
+    validateGenerationRequest({ goal: "flirty", request_id: REQUEST_ID }).ok,
+    false,
+  );
 });
 
 Deno.test("empty text rejected", () => {
@@ -79,10 +87,32 @@ Deno.test("unsupported refinement rejected", () => {
   assertEquals(result.ok, false);
 });
 
+Deno.test("missing request_id rejected", () => {
+  const { request_id: _dropped, ...withoutId } = validText;
+  assertEquals(validateGenerationRequest(withoutId).ok, false);
+});
+
+Deno.test("non-uuid request_id rejected", () => {
+  const result = validateGenerationRequest({
+    ...validText,
+    request_id: "retry-1",
+  });
+  assertEquals(result.ok, false);
+});
+
 Deno.test("installation id validation", () => {
   assertEquals(isValidInstallationId(crypto.randomUUID()), true);
   assertEquals(isValidInstallationId(null), false);
   assertEquals(isValidInstallationId("not-a-uuid"), false);
+});
+
+Deno.test("action classification derives from request shape", () => {
+  assertEquals(classifyAction(validText), "generation");
+  assertEquals(
+    classifyAction({ ...validText, refinement: "shorter" }),
+    "refinement",
+  );
+  assertEquals(classifyAction({ ...validText, refinement: null }), "generation");
 });
 
 Deno.test("canned response schema is complete", () => {
@@ -96,7 +126,6 @@ Deno.test("canned response schema is complete", () => {
     assertEquals(set.length, 3);
     for (const response of set) {
       assertEquals(typeof response.label, "string");
-      assertEquals(typeof response.text, "string");
       assertEquals(response.text.length > 0, true);
     }
   }

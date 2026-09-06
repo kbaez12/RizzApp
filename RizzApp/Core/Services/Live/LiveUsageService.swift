@@ -10,9 +10,10 @@ import Observation
 /// real server-side quota persistence.
 @Observable
 final class LiveUsageService: UsageServicing {
-    /// Optimistic pre-fetch default so a cold launch doesn't block the flow;
-    /// refreshed from the backend on first appearance.
-    private(set) var cached = UsageStatus(remaining: 5, limit: 5, tier: .free, refinementsRemaining: 2)
+    /// Pre-fetch default so a cold launch doesn't block the flow; replaced
+    /// by the authoritative backend snapshot on first fetch. Fresh server
+    /// installations start with 0 refinements (granted per analysis).
+    private(set) var cached = UsageStatus(remaining: 5, limit: 5, tier: .free, refinementsRemaining: 0)
     private var hasFetched = false
 
     private let client: APIClient
@@ -28,13 +29,10 @@ final class LiveUsageService: UsageServicing {
     }
 
     func consumeFullGeneration() {
-        // Optimistic local view; server snapshots overwrite via apply(_:).
-        cached = UsageStatus(
-            remaining: max(0, cached.remaining - 1),
-            limit: cached.limit,
-            tier: cached.tier,
-            refinementsRemaining: 2
-        )
+        // Intentionally a no-op in live mode (Phase 4B): the backend charges
+        // atomically and every generate/refine response carries the
+        // authoritative usage snapshot, applied via apply(_:). Optimistic
+        // local decrements would double-count on top of it.
     }
 
     func canRefine() -> Bool {
@@ -42,16 +40,7 @@ final class LiveUsageService: UsageServicing {
     }
 
     func consumeRefinement() {
-        if cached.refinementsRemaining > 0 {
-            cached = UsageStatus(
-                remaining: cached.remaining,
-                limit: cached.limit,
-                tier: cached.tier,
-                refinementsRemaining: cached.refinementsRemaining - 1
-            )
-        } else {
-            consumeFullGeneration()
-        }
+        // No-op — see consumeFullGeneration().
     }
 
     func refreshIfNeeded() async {

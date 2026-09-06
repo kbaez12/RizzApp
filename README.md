@@ -42,7 +42,26 @@ cp supabase/functions/.env.example supabase/functions/.env
 
 # run the local stack + functions
 supabase start
+supabase db reset        # applies supabase/migrations/ + seed.sql (dev fixtures)
 supabase functions serve --env-file supabase/functions/.env
+```
+
+Quota (Phase 4B) is enforced server-side in Postgres: atomic
+reserve → work → commit/release with idempotency on
+(installation_id, request_id). Allowances live in the `usage_config` table
+(free 5 lifetime / plus 150 monthly / 2 free refinements per analysis) —
+change them with an UPDATE, not code. Dev fixtures in `supabase/seed.sql`
+provide a Plus test installation (`cccccccc-…`) and an exhausted free one
+(`eeeeeeee-…`). Stale reservations expire after 2 minutes and are released
+opportunistically on the next request; add scheduled cleanup before
+production (documented in the migration).
+
+Integration tests (needs the local stack running):
+
+```bash
+INTEGRATION=true SUPABASE_URL=http://127.0.0.1:54321 \
+PUBLISHABLE_KEY=<local publishable key> \
+deno test --allow-net --allow-env supabase/functions/tests/integration_test.ts
 ```
 
 Then:

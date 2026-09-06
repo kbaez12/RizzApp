@@ -1,31 +1,42 @@
-// GET /functions/v1/usage — Phase 4A: canned development usage only.
-// NOT production-authoritative quota. Phase 4B adds real persistence and
-// atomic consumption.
+// GET /functions/v1/usage — Phase 4B: authoritative Postgres-backed usage.
+//
+// Publishable-key authentication via @supabase/server. Creates the
+// installation row on first contact (concurrency-safe upsert in the RPC).
+// No conversation content is involved anywhere in this endpoint.
 
+import { withSupabase } from "@supabase/server";
 import { errorJson, json } from "../_shared/responses.ts";
 import { handleOptions } from "../_shared/cors.ts";
-import { CANNED_USAGE_INITIAL } from "../_shared/canned.ts";
 import { isValidInstallationId } from "../_shared/contracts.ts";
 
-Deno.serve((req) => {
-  if (req.method === "OPTIONS") {
-    return handleOptions(req);
-  }
-  if (req.method !== "GET") {
-    return errorJson(405, "METHOD_NOT_ALLOWED", "Use GET.", {}, req);
-  }
-  if (!req.headers.get("apikey")) {
-    return errorJson(401, "UNAUTHORIZED", "Missing API key.", {}, req);
-  }
-  if (!isValidInstallationId(req.headers.get("x-installation-id"))) {
-    return errorJson(
-      400,
-      "INVALID_INSTALLATION",
-      "Missing or invalid installation identifier.",
-      {},
-      req,
-    );
-  }
+export default {
+  fetch: withSupabase({ auth: "publishable" }, async (req, ctx) => {
+    if (req.method === "OPTIONS") {
+      return handleOptions(req);
+    }
+    if (req.method !== "GET") {
+      return errorJson(405, "METHOD_NOT_ALLOWED", "Use GET.", {}, req);
+    }
 
-  return json(200, CANNED_USAGE_INITIAL, req);
-});
+    const installationId = req.headers.get("x-installation-id");
+    if (!isValidInstallationId(installationId)) {
+      return errorJson(
+        400,
+        "INVALID_INSTALLATION",
+        "Missing or invalid installation identifier.",
+        {},
+        req,
+      );
+    }
+
+    const { data: usage, error } = await ctx.supabaseAdmin.rpc("get_usage", {
+      p_installation_id: installationId,
+    });
+    if (error || !usage) {
+      console.log(JSON.stringify({ fn: "usage", status: 500, category: "rpc_failed" }));
+      return errorJson(500, "INTERNAL", "Could not load usage.", {}, req);
+    }
+
+    return json(200, usage, req);
+  }),
+};

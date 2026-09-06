@@ -49,16 +49,28 @@ final class ResultsViewModel {
         self.onQuotaExhausted = onQuotaExhausted
     }
 
-    /// Initial generation (also used by retry and Generate 3 More).
-    func generate() async {
+    /// Idempotency key for the current logical generation. A retry of a
+    /// failed/timed-out generation reuses it (the backend then never
+    /// double-charges); a genuinely new generation (initial load,
+    /// Generate 3 More) mints a fresh one.
+    private var generationRequestID = UUID()
+
+    /// Full generation. `isRetry: true` = retrying the same logical request
+    /// (Try Again); keeps the same request ID.
+    func generate(isRetry: Bool = false) async {
         guard usage.canStartFullGeneration() else {
             onQuotaExhausted()
             return
         }
+        if !isRetry {
+            generationRequestID = UUID()
+        }
         state = .analyzing
         inlineError = nil
         do {
-            responses = try await generation.generate(for: input, goal: goal)
+            responses = try await generation.generate(
+                for: input, goal: goal, requestID: generationRequestID
+            )
             usage.consumeFullGeneration()
             state = .loaded
         } catch {
@@ -98,8 +110,10 @@ final class ResultsViewModel {
         isRefining = true
         inlineError = nil
         do {
+            // Each refinement tap is a new logical request → fresh ID.
             responses = try await generation.refine(
-                action, input: input, goal: goal, previous: responses
+                action, input: input, goal: goal, previous: responses,
+                requestID: UUID()
             )
             usage.consumeRefinement()
         } catch {

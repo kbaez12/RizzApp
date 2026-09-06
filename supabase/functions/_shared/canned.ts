@@ -73,22 +73,8 @@ export const CANNED_REFINED: Record<string, CannedResponse[]> = {
   ],
 };
 
-// After a canned generation: one analysis notionally consumed.
-export const CANNED_USAGE_AFTER_GENERATE = {
-  remaining: 4,
-  limit: 5,
-  tier: "free",
-  refinements_remaining: 2,
-};
-
-// GET /usage baseline.
-export const CANNED_USAGE_INITIAL = {
-  remaining: 5,
-  limit: 5,
-  tier: "free",
-  refinements_remaining: 2,
-};
-
+// Phase 4B: usage is no longer canned — it comes from Postgres. Only this
+// exhausted snapshot remains, for the debug "quota" error simulation.
 export const CANNED_USAGE_EXHAUSTED = {
   remaining: 0,
   limit: 5,

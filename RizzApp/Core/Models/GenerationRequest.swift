@@ -26,6 +26,9 @@ struct GenerationRequest: Encodable {
 
     let input: Input
     let goal: ResponseGoal
+    /// Idempotency key (encodes as `request_id`). The backend guarantees the
+    /// same (installation, request_id) pair is never charged twice.
+    let requestId: UUID
     let refinement: RefinementAction?
     let previousResponses: [GeneratedResponse]?
 
@@ -35,6 +38,7 @@ struct GenerationRequest: Encodable {
     init(
         input: ConversationInput,
         goal: ResponseGoal,
+        requestID: UUID,
         refinement: RefinementAction? = nil,
         previousResponses: [GeneratedResponse]? = nil
     ) throws {
@@ -48,6 +52,7 @@ struct GenerationRequest: Encodable {
             self.input = Input(kind: .image, text: nil, imageBase64: imageData.base64EncodedString())
         }
         self.goal = goal
+        self.requestId = requestID
         self.refinement = refinement
         self.previousResponses = previousResponses
     }

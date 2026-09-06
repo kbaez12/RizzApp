@@ -50,7 +50,8 @@ struct ResultsView: View {
                 AnalyzingView()
             case .failed:
                 errorState(message: model.failureMessage, retryLabel: "Try Again") {
-                    Task { await model.generate() }
+                    // Same logical request — reuses the idempotency key.
+                    Task { await model.generate(isRetry: true) }
                 }
             case .loaded:
                 loadedContent(model)

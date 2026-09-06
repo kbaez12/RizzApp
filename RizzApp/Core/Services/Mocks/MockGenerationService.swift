@@ -12,7 +12,8 @@ final class MockGenerationService: GenerationServicing {
 
     func generate(
         for input: ConversationInput,
-        goal: ResponseGoal
+        goal: ResponseGoal,
+        requestID: UUID
     ) async throws -> [GeneratedResponse] {
         try await Task.sleep(for: .seconds(1.8))
         try simulateFailureIfNeeded()
@@ -29,7 +30,8 @@ final class MockGenerationService: GenerationServicing {
         _ action: RefinementAction,
         input: ConversationInput,
         goal: ResponseGoal,
-        previous: [GeneratedResponse]
+        previous: [GeneratedResponse],
+        requestID: UUID
     ) async throws -> [GeneratedResponse] {
         try await Task.sleep(for: .seconds(1.4))
         try simulateFailureIfNeeded()

@@ -9,9 +9,11 @@ final class GenerationRequestTests: XCTestCase {
     }
 
     func testTextRequestEncoding() throws {
+        let requestID = UUID()
         let request = try GenerationRequest(
             input: .pastedText("them: hey lol"),
-            goal: .keepItGoing
+            goal: .keepItGoing,
+            requestID: requestID
         )
         let json = try encodeToDictionary(request)
         let input = try XCTUnwrap(json["input"] as? [String: Any])
@@ -20,6 +22,7 @@ final class GenerationRequestTests: XCTestCase {
         XCTAssertEqual(input["text"] as? String, "them: hey lol")
         XCTAssertNil(input["image_base64"])
         XCTAssertEqual(json["goal"] as? String, "keep_it_going")
+        XCTAssertEqual(json["request_id"] as? String, requestID.uuidString)
         XCTAssertNil(json["refinement"] ?? nil)
         XCTAssertNil(json["previous_responses"] ?? nil)
     }
@@ -28,7 +31,8 @@ final class GenerationRequestTests: XCTestCase {
         let imageData = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02])
         let request = try GenerationRequest(
             input: .screenshot(imageData: imageData),
-            goal: .flirty
+            goal: .flirty,
+            requestID: UUID()
         )
         let json = try encodeToDictionary(request)
         let input = try XCTUnwrap(json["input"] as? [String: Any])
@@ -36,6 +40,7 @@ final class GenerationRequestTests: XCTestCase {
         XCTAssertEqual(input["kind"] as? String, "image")
         XCTAssertEqual(input["image_base64"] as? String, imageData.base64EncodedString())
         XCTAssertNil(input["text"])
+        XCTAssertNotNil(json["request_id"])
     }
 
     func testRefinementRequestEncoding() throws {
@@ -45,6 +50,7 @@ final class GenerationRequestTests: XCTestCase {
         let request = try GenerationRequest(
             input: .pastedText("convo"),
             goal: .funny,
+            requestID: UUID(),
             refinement: .moreLikeMe,
             previousResponses: previous
         )
@@ -60,13 +66,13 @@ final class GenerationRequestTests: XCTestCase {
     func testOversizedImageThrows() {
         let oversized = Data(count: GenerationRequest.maxImageBytes + 1)
         XCTAssertThrowsError(
-            try GenerationRequest(input: .screenshot(imageData: oversized), goal: .flirty)
+            try GenerationRequest(input: .screenshot(imageData: oversized), goal: .flirty, requestID: UUID())
         )
     }
 
     func testEmptyImageThrows() {
         XCTAssertThrowsError(
-            try GenerationRequest(input: .screenshot(imageData: Data()), goal: .flirty)
+            try GenerationRequest(input: .screenshot(imageData: Data()), goal: .flirty, requestID: UUID())
         )
     }
 

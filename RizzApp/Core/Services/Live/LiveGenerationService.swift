@@ -19,20 +19,23 @@ final class LiveGenerationService: GenerationServicing {
 
     func generate(
         for input: ConversationInput,
-        goal: ResponseGoal
+        goal: ResponseGoal,
+        requestID: UUID
     ) async throws -> [GeneratedResponse] {
-        try await send(GenerationRequest(input: input, goal: goal))
+        try await send(GenerationRequest(input: input, goal: goal, requestID: requestID))
     }
 
     func refine(
         _ action: RefinementAction,
         input: ConversationInput,
         goal: ResponseGoal,
-        previous: [GeneratedResponse]
+        previous: [GeneratedResponse],
+        requestID: UUID
     ) async throws -> [GeneratedResponse] {
         try await send(GenerationRequest(
             input: input,
             goal: goal,
+            requestID: requestID,
             refinement: action,
             previousResponses: previous
         ))

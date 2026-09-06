@@ -35,6 +35,19 @@ export interface GenerationRequestBody {
   goal?: string;
   refinement?: string | null;
   previous_responses?: unknown;
+  /** Client-generated idempotency key (UUID). Same logical request retried
+   * MUST reuse the same id so quota is never charged twice. */
+  request_id?: string;
+}
+
+/** Server-side action classification — the charge category is derived from
+ * the request shape, never from client instructions. Initial generation and
+ * "Generate 3 More" are full generations; any refinement field makes it a
+ * refinement. */
+export function classifyAction(
+  body: GenerationRequestBody,
+): "generation" | "refinement" {
+  return body.refinement ? "refinement" : "generation";
 }
 
 export type ValidationResult =
@@ -92,6 +105,13 @@ export function validateGenerationRequest(body: unknown): ValidationResult {
     !(SUPPORTED_REFINEMENTS as readonly string[]).includes(request.refinement)
   ) {
     return { ok: false, message: "Unsupported refinement." };
+  }
+
+  if (
+    typeof request.request_id !== "string" ||
+    !UUID_PATTERN.test(request.request_id)
+  ) {
+    return { ok: false, message: "Missing or invalid request_id." };
   }
 
   return { ok: true };
