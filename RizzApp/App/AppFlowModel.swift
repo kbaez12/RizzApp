@@ -28,8 +28,17 @@ final class AppFlowModel {
 
     // MARK: Flow actions
 
-    func startScreenshotFlow() {
+    /// Called after a screenshot has been successfully loaded and processed.
+    /// Navigation to the preview only happens with a valid image in hand.
+    func presentScreenshotPreview(imageData: Data) {
+        input = .screenshot(imageData: imageData)
         path.append(.screenshotPreview)
+    }
+
+    /// Swaps the current screenshot (Replace flow). The previous image data
+    /// is released as soon as the enum payload is overwritten.
+    func replaceScreenshot(imageData: Data) {
+        input = .screenshot(imageData: imageData)
     }
 
     func startPasteTextFlow() {
