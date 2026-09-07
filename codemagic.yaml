@@ -1,0 +1,72 @@
+# Codemagic is the Mac for this repo (no local Xcode).
+# This workflow: generate the .xcodeproj → compile → run unit tests →
+# save an unsigned simulator .app. No Apple signing required.
+#
+# It does NOT give you a tappable iPhone UI. For that you need a later
+# signed TestFlight workflow (Apple Developer account + certificates).
+#
+# In Codemagic: Apps → add this GitHub repo → use this yaml → start
+# the "iOS compile + tests" workflow.
+
+workflows:
+  ios-compile-and-test:
+    name: iOS compile + tests
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        script: |
+          xcodegen generate
+
+      - name: Resolve Swift packages
+        script: |
+          xcodebuild -resolvePackageDependencies \
+            -project RizzApp.xcodeproj \
+            -scheme RizzApp
+
+      - name: Compile for simulator
+        script: |
+          set -euo pipefail
+          DESTINATION=$(
+            xcrun simctl list devices available \
+              | awk -F '[()]' '/iPhone/{print $1; exit}' \
+              | sed 's/^ *//;s/ *$//'
+          )
+          echo "Using simulator: $DESTINATION"
+          xcodebuild build \
+            -project RizzApp.xcodeproj \
+            -scheme RizzApp \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=$DESTINATION" \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run unit tests
+        script: |
+          set -euo pipefail
+          DESTINATION=$(
+            xcrun simctl list devices available \
+              | awk -F '[()]' '/iPhone/{print $1; exit}' \
+              | sed 's/^ *//;s/ *$//'
+          )
+          xcodebuild test \
+            -project RizzApp.xcodeproj \
+            -scheme RizzApp \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=$DESTINATION" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+    artifacts:
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Logs/Test/**/*.xcresult

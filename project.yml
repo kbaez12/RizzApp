@@ -47,3 +47,14 @@ targets:
       - RizzAppTests
     dependencies:
       - target: RizzApp
+
+# Explicit scheme so Codemagic/xcodebuild can find it after `xcodegen generate`.
+schemes:
+  RizzApp:
+    build:
+      targets:
+        RizzApp: all
+        RizzAppTests: [test]
+    test:
+      targets:
+        - RizzAppTests
