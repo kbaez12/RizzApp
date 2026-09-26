@@ -139,7 +139,7 @@ struct ScreenshotPreviewView: View {
     }
     flow.presentScreenshotPreview(imageData: sampleImage.pngData() ?? Data())
 
-    return NavigationStack {
+    NavigationStack {
         ScreenshotPreviewView()
     }
     .environment(flow)
