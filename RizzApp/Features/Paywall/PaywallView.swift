@@ -86,7 +86,7 @@ struct PaywallView: View {
 
     private var header: some View {
         VStack(spacing: Spacing.md) {
-            Text("RizzApp Plus")
+            Text("Greenshot Plus")
                 .font(Typography.title)
                 .foregroundStyle(Theme.textPrimary)
 

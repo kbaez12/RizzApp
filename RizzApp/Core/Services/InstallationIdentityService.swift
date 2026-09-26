@@ -22,7 +22,7 @@ final class KeychainInstallationIdentityService: InstallationIdentityProviding {
     private let service: String
     private let account = "installation-id"
 
-    init(service: String = "com.placeholder.rizzapp") {
+    init(service: String = "com.zenomedia.greenshot") {
         self.service = service
     }
 
