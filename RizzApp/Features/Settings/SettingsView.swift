@@ -3,11 +3,10 @@ import SwiftUI
 /// Settings — deliberately small. Subscription status/actions, legal links,
 /// support, version.
 struct SettingsView: View {
+    @Environment(AppFlowModel.self) private var flow
     @Environment(\.services) private var services
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
-    @State private var showsPaywall = false
     @State private var isWorking = false
     @State private var noticeMessage: String?
 
@@ -35,7 +34,9 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            AppHeader(onMenu: { flow.isShowingMenu = true })
+
             List {
                 Section {
                     row(icon: "sparkles", title: "Subscription", value: statusValue)
@@ -52,7 +53,7 @@ struct SettingsView: View {
                         }
                     } else {
                         button(icon: "arrow.up.circle", title: "Upgrade to Plus") {
-                            showsPaywall = true
+                            flow.isShowingPaywall = true
                         }
                     }
                     button(icon: "arrow.clockwise", title: "Restore Purchases") {
@@ -82,7 +83,7 @@ struct SettingsView: View {
                     if LegalLinks.arePlaceholders {
                         Text("Development build: privacy, terms and support URLs are still placeholders.")
                             .font(Typography.caption)
-                            .foregroundStyle(Theme.accent)
+                            .foregroundStyle(Theme.danger)
                     }
                 }
                 .listRowBackground(Theme.surface)
@@ -93,20 +94,9 @@ struct SettingsView: View {
                 .listRowBackground(Theme.surface)
             }
             .scrollContentBackground(.hidden)
-            .background(Theme.background)
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .font(Typography.caption)
-                }
-            }
         }
-        .preferredColorScheme(.dark)
-        .sheet(isPresented: $showsPaywall) {
-            PaywallView()
-        }
+        .background(GradientBackground())
+        .tint(Theme.textPrimary)
         .task {
             // Reflects renewals/expirations that happened while away.
             await services.subscription.refresh()
@@ -158,6 +148,6 @@ struct SettingsView: View {
 
 #Preview {
     SettingsView()
+        .environment(AppFlowModel())
         .environment(\.services, .mock)
-        .preferredColorScheme(.dark)
 }

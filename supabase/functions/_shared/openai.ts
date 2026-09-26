@@ -15,7 +15,7 @@ export function configuredModel(): string {
 }
 
 export interface OpenAIResult {
-  parsed: Record<string, string>;
+  parsed: Record<string, unknown>;
   inputTokens: number | null;
   outputTokens: number | null;
 }
@@ -103,7 +103,7 @@ export async function generateStructured(options: {
     throw new OpenAIError("OpenAI returned no usable output.", true);
   }
 
-  let parsed: Record<string, string>;
+  let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(text);
   } catch {

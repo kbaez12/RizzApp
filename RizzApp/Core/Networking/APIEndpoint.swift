@@ -25,6 +25,16 @@ struct APIEndpoint {
         )
     }
 
+    /// POST /functions/v1/analyze
+    static func analyze(_ request: AnalysisRequest) throws -> APIEndpoint {
+        APIEndpoint(
+            path: "functions/v1/analyze",
+            method: .post,
+            body: try APIClient.encoder.encode(request),
+            timeout: 60
+        )
+    }
+
     /// GET /functions/v1/usage
     static var usage: APIEndpoint {
         APIEndpoint(path: "functions/v1/usage", method: .get, body: nil, timeout: 15)

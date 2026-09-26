@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Standard rounded card container used across the app.
+/// Standard white rounded card with a soft shadow.
 struct Card<Content: View>: View {
     var padding: CGFloat = Spacing.md
     @ViewBuilder var content: Content
@@ -10,10 +10,7 @@ struct Card<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(padding)
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.card))
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.card)
-                    .strokeBorder(Theme.stroke, lineWidth: 1)
-            )
+            .shadow(color: Theme.shadow, radius: 10, y: 4)
     }
 }
 
@@ -24,6 +21,5 @@ struct Card<Content: View>: View {
             .foregroundStyle(Theme.textPrimary)
     }
     .padding()
-    .background(Theme.background)
-    .preferredColorScheme(.dark)
+    .background(GradientBackground())
 }

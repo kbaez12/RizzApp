@@ -16,7 +16,7 @@ struct PaywallView: View {
 
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            GradientBackground()
 
             VStack(spacing: Spacing.lg) {
                 header
@@ -40,7 +40,7 @@ struct PaywallView: View {
                     if let errorMessage {
                         Text(errorMessage)
                             .font(Typography.caption)
-                            .foregroundStyle(Theme.accent)
+                            .foregroundStyle(Theme.danger)
                             .multilineTextAlignment(.center)
                             .transition(.opacity)
                     }

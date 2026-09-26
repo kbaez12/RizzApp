@@ -88,11 +88,11 @@ export async function produceReplies(
   };
 }
 
-function routeTexts(parsed: Record<string, string>): Record<string, string> {
+function routeTexts(parsed: Record<string, unknown>): Record<string, string> {
   return {
-    natural: parsed.natural ?? "",
-    bold: parsed.bold ?? "",
-    advance: parsed.advance ?? "",
+    natural: String(parsed.natural ?? ""),
+    bold: String(parsed.bold ?? ""),
+    advance: String(parsed.advance ?? ""),
   };
 }
 

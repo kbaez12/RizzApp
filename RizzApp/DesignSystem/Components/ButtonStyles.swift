@@ -1,21 +1,23 @@
 import SwiftUI
 
-/// Full-width filled accent button for the single primary action on a screen.
+/// Full-width black capsule with gradient label — the single primary action
+/// on a screen.
 struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Typography.button)
-            .foregroundStyle(Theme.textOnAccent)
+            .foregroundStyle(Theme.brandGradient)
             .frame(maxWidth: .infinity)
             .frame(height: 56)
-            .background(Theme.accent, in: RoundedRectangle(cornerRadius: Radius.button))
+            .background(Theme.ink, in: Capsule())
+            .shadow(color: Theme.shadow, radius: 10, y: 4)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.9 : 1)
             .animation(.spring(duration: 0.25), value: configuration.isPressed)
     }
 }
 
-/// Full-width outlined button for secondary actions.
+/// Full-width white capsule for secondary actions.
 struct SecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -23,25 +25,23 @@ struct SecondaryButtonStyle: ButtonStyle {
             .foregroundStyle(Theme.textPrimary)
             .frame(maxWidth: .infinity)
             .frame(height: 56)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.button))
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.button)
-                    .strokeBorder(Theme.stroke, lineWidth: 1)
-            )
+            .background(Theme.surface, in: Capsule())
+            .shadow(color: Theme.shadow, radius: 8, y: 3)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.spring(duration: 0.25), value: configuration.isPressed)
     }
 }
 
-/// Compact pill button for inline actions (e.g. refinement actions on Results).
+/// Compact white pill for inline actions and chat option chips.
 struct PillButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(Typography.caption)
+            .font(Typography.subheadline.weight(.semibold))
             .foregroundStyle(Theme.textPrimary)
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm + 2)
-            .background(Theme.surfaceElevated, in: Capsule())
+            .background(Theme.surface, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1))
             .scaleEffect(configuration.isPressed ? 0.95 : 1)
             .animation(.spring(duration: 0.2), value: configuration.isPressed)
     }

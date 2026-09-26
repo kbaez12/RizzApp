@@ -64,7 +64,46 @@ export function validateGenerationRequest(body: unknown): ValidationResult {
   }
   const request = body as GenerationRequestBody;
 
-  const input = request.input;
+  const inputResult = validateInput(request.input);
+  if (!inputResult.ok) return inputResult;
+
+  if (
+    typeof request.goal !== "string" ||
+    !(SUPPORTED_GOALS as readonly string[]).includes(request.goal)
+  ) {
+    return { ok: false, message: "Unsupported goal." };
+  }
+
+  if (
+    request.refinement !== undefined &&
+    request.refinement !== null &&
+    !(SUPPORTED_REFINEMENTS as readonly string[]).includes(request.refinement)
+  ) {
+    return { ok: false, message: "Unsupported refinement." };
+  }
+
+  return validateRequestId(request.request_id);
+}
+
+/** Analysis requests carry only the conversation and an idempotency key. */
+export function validateAnalysisRequest(body: unknown): ValidationResult {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, message: "Body must be a JSON object." };
+  }
+  const request = body as GenerationRequestBody;
+  const inputResult = validateInput(request.input);
+  if (!inputResult.ok) return inputResult;
+  return validateRequestId(request.request_id);
+}
+
+function validateRequestId(value: unknown): ValidationResult {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+    return { ok: false, message: "Missing or invalid request_id." };
+  }
+  return { ok: true };
+}
+
+function validateInput(input: GenerationRequestBody["input"]): ValidationResult {
   if (typeof input !== "object" || input === null) {
     return { ok: false, message: "Missing input." };
   }
@@ -90,28 +129,6 @@ export function validateGenerationRequest(body: unknown): ValidationResult {
     }
   } else {
     return { ok: false, message: "input.kind must be 'text' or 'image'." };
-  }
-
-  if (
-    typeof request.goal !== "string" ||
-    !(SUPPORTED_GOALS as readonly string[]).includes(request.goal)
-  ) {
-    return { ok: false, message: "Unsupported goal." };
-  }
-
-  if (
-    request.refinement !== undefined &&
-    request.refinement !== null &&
-    !(SUPPORTED_REFINEMENTS as readonly string[]).includes(request.refinement)
-  ) {
-    return { ok: false, message: "Unsupported refinement." };
-  }
-
-  if (
-    typeof request.request_id !== "string" ||
-    !UUID_PATTERN.test(request.request_id)
-  ) {
-    return { ok: false, message: "Missing or invalid request_id." };
   }
 
   return { ok: true };

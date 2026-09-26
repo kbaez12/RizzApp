@@ -19,6 +19,24 @@ struct GenerationRequest: Encodable {
         let kind: Kind
         let text: String?
         let imageBase64: String?
+
+        /// Base64 conversion happens here — at request-construction time
+        /// only. Shared by generate and analyze requests.
+        init(_ conversation: ConversationInput) throws {
+            switch conversation {
+            case .pastedText(let text):
+                kind = .text
+                self.text = text
+                imageBase64 = nil
+            case .screenshot(let imageData):
+                guard !imageData.isEmpty, imageData.count <= GenerationRequest.maxImageBytes else {
+                    throw APIError.invalidRequest(message: nil)
+                }
+                kind = .image
+                text = nil
+                imageBase64 = imageData.base64EncodedString()
+            }
+        }
     }
 
     /// Hard cap on processed screenshot bytes before base64 encoding.
@@ -42,15 +60,7 @@ struct GenerationRequest: Encodable {
         refinement: RefinementAction? = nil,
         previousResponses: [GeneratedResponse]? = nil
     ) throws {
-        switch input {
-        case .pastedText(let text):
-            self.input = Input(kind: .text, text: text, imageBase64: nil)
-        case .screenshot(let imageData):
-            guard !imageData.isEmpty, imageData.count <= Self.maxImageBytes else {
-                throw APIError.invalidRequest(message: nil)
-            }
-            self.input = Input(kind: .image, text: nil, imageBase64: imageData.base64EncodedString())
-        }
+        self.input = try Input(input)
         self.goal = goal
         self.requestId = requestID
         self.refinement = refinement

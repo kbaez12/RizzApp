@@ -14,12 +14,10 @@
 import { withSupabase } from "@supabase/server";
 import { produceReplies } from "../_shared/generation.ts";
 import { configuredModel } from "../_shared/openai.ts";
-import { enforceRateLimit } from "../_shared/rate_limit.ts";
+import { preflight } from "../_shared/request.ts";
 import {
   classifyAction,
   type GenerationRequestBody,
-  isValidInstallationId,
-  MAX_BODY_BYTES,
   validateGenerationRequest,
 } from "../_shared/contracts.ts";
 import { errorJson, json } from "../_shared/responses.ts";
@@ -110,40 +108,12 @@ export default {
       }
     }
 
-    const installationId = req.headers.get("x-installation-id");
-    if (!isValidInstallationId(installationId)) {
-      log(400, "invalid_installation_id");
-      return errorJson(
-        400,
-        "INVALID_INSTALLATION",
-        "Missing or invalid installation identifier.",
-        {},
-        req,
-      );
+    const pre = await preflight(req, ctx.supabaseAdmin);
+    if (!pre.ok) {
+      log(pre.response.status, pre.category);
+      return pre.response;
     }
-
-    // Cheap per-installation rate limit before any expensive work.
-    const rate = await enforceRateLimit(ctx.supabaseAdmin, installationId!);
-    if (!rate.allowed) {
-      log(429, "rate_limited");
-      return errorJson(429, "RATE_LIMITED", "Too many requests.", {
-        extraHeaders: { "Retry-After": String(rate.retryAfterSeconds) },
-      }, req);
-    }
-
-    const contentLength = Number(req.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_BODY_BYTES) {
-      log(400, "payload_too_large");
-      return errorJson(400, "PAYLOAD_TOO_LARGE", "Request body too large.", {}, req);
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = await req.json();
-    } catch {
-      log(400, "invalid_json");
-      return errorJson(400, "INVALID_JSON", "Body must be valid JSON.", {}, req);
-    }
+    const { installationId, parsed } = pre;
 
     const validation = validateGenerationRequest(parsed);
     if (!validation.ok) {
