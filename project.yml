@@ -1,7 +1,7 @@
 name: RizzApp
 
 options:
-  bundleIdPrefix: com.placeholder
+  bundleIdPrefix: com.zenomedia
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -29,12 +29,14 @@ targets:
         product: RevenueCat
     settings:
       base:
-        # Placeholder bundle ID — replace before App Store Connect setup.
-        PRODUCT_BUNDLE_IDENTIFIER: com.placeholder.rizzapp
+        # Must exactly match the App Store Connect app record.
+        PRODUCT_BUNDLE_IDENTIFIER: com.zenomedia.greenshot
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
-        INFOPLIST_KEY_CFBundleDisplayName: RizzApp
+        INFOPLIST_KEY_CFBundleDisplayName: Greenshot
+        # Only standard HTTPS/TLS is used (exempt from export compliance).
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: true
         MARKETING_VERSION: "0.1.0"

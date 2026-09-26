@@ -1,8 +1,8 @@
 import SwiftUI
 
 enum AppBrand {
-    static let displayName = "RizzApp"
-    static let wordmark = "RIZZAPP"
+    static let displayName = "Greenshot"
+    static let wordmark = "GREENSHOT"
 }
 
 /// Top bar shared by all tabs: menu (three lines) on the left, wordmark in

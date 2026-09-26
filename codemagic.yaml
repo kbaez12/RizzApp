@@ -32,13 +32,20 @@ workflows:
 
       - name: Compile for simulator
         script: |
+          #!/usr/bin/env bash
           set -euo pipefail
           DESTINATION=$(
             xcrun simctl list devices available \
-              | awk -F '[()]' '/iPhone/{print $1; exit}' \
+              | awk -F '[()]' '/iPhone/ && !found {print $1; found=1}' \
               | sed 's/^ *//;s/ *$//'
           )
           echo "Using simulator: $DESTINATION"
+
+          LOG_DIR=/tmp/xcodebuild_logs
+          LOG_FILE="$LOG_DIR/compile.log"
+          mkdir -p "$LOG_DIR"
+
+          set +e
           xcodebuild build \
             -project RizzApp.xcodeproj \
             -scheme RizzApp \
@@ -47,14 +54,32 @@ workflows:
             -configuration Debug \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$LOG_FILE"
+          XCODEBUILD_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$XCODEBUILD_STATUS" -ne 0 ]; then
+            echo ""
+            echo "==================== COMPILER DIAGNOSTICS ===================="
+            echo "xcodebuild exited with status $XCODEBUILD_STATUS"
+            echo "Lines matching 'error:' / 'fatal error:' (with context):"
+            echo "--------------------------------------------------------------"
+            grep -n -E -B 4 -A 6 '(fatal )?error:' "$LOG_FILE" | head -n 400 || true
+            echo ""
+            echo "==================== LAST 100 LINES OF LOG ===================="
+            tail -n 100 "$LOG_FILE" || true
+            echo "==============================================================="
+            echo "Full log: $LOG_FILE"
+            exit "$XCODEBUILD_STATUS"
+          fi
 
       - name: Run unit tests
         script: |
           set -euo pipefail
           DESTINATION=$(
             xcrun simctl list devices available \
-              | awk -F '[()]' '/iPhone/{print $1; exit}' \
+              | awk -F '[()]' '/iPhone/ && !found {print $1; found=1}' \
               | sed 's/^ *//;s/ *$//'
           )
           xcodebuild test \
