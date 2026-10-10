@@ -4,7 +4,7 @@
 // installation row on first contact (concurrency-safe upsert in the RPC).
 // No conversation content is involved anywhere in this endpoint.
 
-import { withSupabase } from "@supabase/server";
+import { withSupabase } from "npm:@supabase/server@1";
 import { errorJson, json } from "../_shared/responses.ts";
 import { handleOptions } from "../_shared/cors.ts";
 import { isValidInstallationId } from "../_shared/contracts.ts";

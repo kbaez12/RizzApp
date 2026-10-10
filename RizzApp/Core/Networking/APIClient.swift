@@ -71,6 +71,12 @@ final class APIClient {
             throw APIError.unauthorized
         case 402:
             throw APIError.quotaExceeded(backendPayload(from: data)?.usage)
+        case 409:
+            let payload = backendPayload(from: data)
+            guard payload?.error.code == "DUPLICATE_REQUEST" else {
+                throw APIError.invalidResponse
+            }
+            throw APIError.duplicateRequest(payload?.usage)
         case 429:
             let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(TimeInterval.init)

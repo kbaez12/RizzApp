@@ -11,7 +11,7 @@
 // Logging: event type, mapped tier, installation id, status. No customer
 // PII, no receipts, no conversation data (there is none here).
 
-import { withSupabase } from "@supabase/server";
+import { withSupabase } from "npm:@supabase/server@1";
 import { errorJson, json } from "../_shared/responses.ts";
 
 const UUID_PATTERN =

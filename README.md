@@ -9,17 +9,24 @@ No accounts. No profiles. No conversation history.
 - Minimum iOS: 17.0
 - SwiftUI, `@Observable`, `NavigationStack`, PhotosPicker
 - Backend: Supabase Edge Functions + Postgres quota
-- AI: OpenAI Responses API (`gpt-5.6-terra`, configurable), `store: false`
+- AI: OpenAI Responses API (`OPENAI_MODEL`, default `gpt-5.6-luna`), `store: false`
 - Subscriptions: RevenueCat + StoreKit, entitlement `plus`
 
 ## Mock vs live
 
-Flip one line in `RizzApp/Core/Networking/APIConfig.swift`:
+Mock mode is the default. To opt into live development, add these
+environment variables to the Debug scheme:
 
-```swift
-static let serviceMode: ServiceMode = .mock            // offline UI
-static let serviceMode: ServiceMode = .liveDevelopment // real backend
+```text
+GREENSHOT_SERVICE_MODE=liveDevelopment
+SUPABASE_ENVIRONMENT=development
+SUPABASE_DEV_URL=http://127.0.0.1:54321
+SUPABASE_DEV_PUBLISHABLE_KEY=<local publishable key>
 ```
+
+For a hosted development project, also set
+`SUPABASE_DEV_PROJECT_REF=<project ref>` and
+`GREENSHOT_ALLOW_HOSTED_DEV=true`. Release builds ignore this mode.
 
 Views never know which mode is running. Mock mode keeps
 `MockGenerationService` / `MockUsageStore` / `MockSubscriptionService`.
@@ -51,12 +58,11 @@ supabase db reset
 supabase functions serve --env-file supabase/functions/.env
 ```
 
-Paste the printed publishable key into `APIConfig.localDevelopment`.
-Local HTTP works from the iOS **simulator** only.
+Put the printed URL and publishable key in the Debug scheme variables
+above. Local HTTP works from the iOS **simulator** only.
 
 ```bash
-deno test supabase/functions/_shared/contracts_test.ts
-deno test supabase/functions/_shared/cringe_guard_test.ts
+deno test --allow-env supabase/functions/_shared
 
 INTEGRATION=true SUPABASE_URL=http://127.0.0.1:54321 \
 PUBLISHABLE_KEY=<key> \

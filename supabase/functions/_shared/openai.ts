@@ -11,7 +11,30 @@ const ENDPOINT = "https://api.openai.com/v1/responses";
 /** Model is configurable server-side (function secret), defaulting to the
  * launch model. No model names are ever exposed to the client. */
 export function configuredModel(): string {
-  return Deno.env.get("OPENAI_MODEL") ?? "gpt-5.6-terra";
+  return Deno.env.get("OPENAI_MODEL") ?? "gpt-5.6-luna";
+}
+
+/** Covers three concise suggestions while bounding runaway output cost. */
+export function configuredMaxOutputTokens(): number {
+  const configured = Number.parseInt(
+    Deno.env.get("OPENAI_MAX_OUTPUT_TOKENS") ?? "",
+    10,
+  );
+  return Number.isInteger(configured) && configured >= 128 &&
+      configured <= 2_000
+    ? configured
+    : 500;
+}
+
+type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+/** `low` is supported by the intended reasoning models and limits cost. */
+export function configuredReasoningEffort(): ReasoningEffort {
+  const configured = Deno.env.get("OPENAI_REASONING_EFFORT");
+  return configured === "minimal" || configured === "low" ||
+      configured === "medium" || configured === "high"
+    ? configured
+    : "low";
 }
 
 export interface OpenAIResult {
@@ -67,6 +90,8 @@ export async function generateStructured(options: {
       body: JSON.stringify({
         model: configuredModel(),
         store: false,
+        max_output_tokens: configuredMaxOutputTokens(),
+        reasoning: { effort: configuredReasoningEffort() },
         input: [
           {
             role: "system",
@@ -85,8 +110,12 @@ export async function generateStructured(options: {
       }),
     });
   } catch (error) {
-    const aborted = error instanceof DOMException && error.name === "AbortError";
-    throw new OpenAIError(aborted ? "OpenAI request timed out." : "OpenAI request failed.", !aborted);
+    const aborted = error instanceof DOMException &&
+      error.name === "AbortError";
+    throw new OpenAIError(
+      aborted ? "OpenAI request timed out." : "OpenAI request failed.",
+      !aborted,
+    );
   }
 
   if (!response.ok) {
@@ -126,7 +155,9 @@ function extractOutputText(payload: {
     content?: Array<{ type?: string; text?: string }>;
   }>;
 }): string | null {
-  if (typeof payload.output_text === "string" && payload.output_text.length > 0) {
+  if (
+    typeof payload.output_text === "string" && payload.output_text.length > 0
+  ) {
     return payload.output_text;
   }
   for (const item of payload.output ?? []) {

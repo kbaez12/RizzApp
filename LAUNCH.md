@@ -76,8 +76,10 @@ supabase functions serve --env-file supabase/functions/.env
 ```
 
 `supabase start` prints the local URL (`http://127.0.0.1:54321`) and a
-publishable/anon key. Paste them into `APIConfig.localDevelopment` and
-set `AppConfig.serviceMode = .liveDevelopment`.
+publishable/anon key. Put them in the Debug scheme environment as
+`SUPABASE_DEV_URL` and `SUPABASE_DEV_PUBLISHABLE_KEY`, then set
+`SUPABASE_ENVIRONMENT=development` and
+`GREENSHOT_SERVICE_MODE=liveDevelopment`.
 
 Hosted project:
 
@@ -86,16 +88,19 @@ supabase login
 supabase link --project-ref YOUR-PROJECT-REF
 supabase db push
 supabase secrets set OPENAI_API_KEY=sk-...
-supabase secrets set OPENAI_MODEL=gpt-5.6-terra
+supabase secrets set OPENAI_MODEL=gpt-5.6-luna
+supabase secrets set OPENAI_MAX_OUTPUT_TOKENS=500
+supabase secrets set OPENAI_REASONING_EFFORT=low
 supabase secrets set REVENUECAT_WEBHOOK_SECRET=a-long-random-string
 supabase functions deploy generate
 supabase functions deploy usage
 supabase functions deploy revenuecat-webhook
 ```
 
-Fill `APIConfig.remoteDevelopment` from Dashboard → Settings → API
-(project URL + **publishable** key). Never put the service-role or
-secret key in the iOS app.
+For a hosted development test, use the same Debug scheme settings plus
+`SUPABASE_DEV_PROJECT_REF=YOUR-PROJECT-REF` and
+`GREENSHOT_ALLOW_HOSTED_DEV=true`. Never put the service-role or secret
+key in the iOS app.
 
 Confirm `DEV_ERROR_SIMULATION` is **unset** on the hosted project.
 
@@ -113,7 +118,8 @@ Authorization header value = the `REVENUECAT_WEBHOOK_SECRET` you set.
 
 1. Create an API key at platform.openai.com. Restrict it if possible.
 2. Put it **only** in Supabase secrets (`OPENAI_API_KEY`).
-3. Confirm model access to `gpt-5.6-terra` (or change `OPENAI_MODEL`).
+3. Confirm Responses API, image input, and strict structured-output access
+   for `gpt-5.6-luna`; if unavailable, set `OPENAI_MODEL` to another supported model.
 4. Every request sends `store: false`. That is **not** Zero Data
    Retention — do not claim ZDR in the App Store or privacy policy
    unless you have a ZDR agreement with OpenAI.
@@ -248,8 +254,8 @@ No device frames required; Apple prefers raw screenshots.
 - [ ] Real privacy / terms / support URLs live and wired in `LegalLinks.swift`
 - [ ] App icon in the asset catalog
 - [ ] Signing team set, archive succeeds
-- [ ] `AppConfig.serviceMode = .liveDevelopment` (or a production
-      equivalent) pointing at the **hosted** Supabase project
+- [ ] Debug scheme explicitly opts into the hosted development project
+      (production RevenueCat wiring remains separate)
 - [ ] OpenAI secret set; a real generation succeeds on device
 - [ ] RevenueCat public key set; sandbox purchase of monthly works
 - [ ] Sandbox purchase of yearly works

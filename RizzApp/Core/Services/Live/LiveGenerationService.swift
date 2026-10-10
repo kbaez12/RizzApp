@@ -52,6 +52,11 @@ final class LiveGenerationService: GenerationServicing {
                 onUsageUpdate(usage)
             }
             throw APIError.quotaExceeded(usage)
+        } catch APIError.duplicateRequest(let usage) {
+            if let usage {
+                onUsageUpdate(usage)
+            }
+            throw APIError.duplicateRequest(usage)
         }
     }
 }

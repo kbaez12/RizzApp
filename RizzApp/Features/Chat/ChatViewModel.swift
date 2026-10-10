@@ -55,6 +55,8 @@ final class ChatViewModel {
     static let offlineMessage = "No internet connection. Check your network and try again."
     static let timeoutMessage = "That took too long. Give it another try."
     static let genericFailureMessage = "Couldn't come up with anything. Try again."
+    static let duplicateMessage =
+        "That request was already processed, but private results aren't stored. Try again for new results."
 
     private let generation: any GenerationServicing
     private let usage: any UsageServicing
@@ -228,6 +230,15 @@ final class ChatViewModel {
         switch error {
         case APIError.quotaExceeded:
             showUpgrade()
+        case APIError.duplicateRequest:
+            let freshRetry: RetryAction
+            switch retry {
+            case .generate:
+                freshRetry = .generate(requestID: UUID())
+            case .refine(let action, _):
+                freshRetry = .refine(action, requestID: UUID())
+            }
+            fail(Self.duplicateMessage, retry: freshRetry)
         case APIError.offline:
             fail(Self.offlineMessage, retry: retry)
         case APIError.timeout:

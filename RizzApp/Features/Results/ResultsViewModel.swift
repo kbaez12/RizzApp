@@ -25,6 +25,8 @@ final class ResultsViewModel {
     static let genericFailureMessage = "Couldn't come up with anything. Try again."
     private static let offlineMessage = "No internet connection. Check your network and try again."
     private static let timeoutMessage = "That took too long. Give it another try."
+    private static let duplicateMessage =
+        "That request was already processed, but private results aren't stored. Try again for new results."
 
     var remainingAnalyses: Int { usage.status.remaining }
 
@@ -89,6 +91,14 @@ final class ResultsViewModel {
             onQuotaExhausted()
             return
         }
+        if case APIError.duplicateRequest = error {
+            // The next Try Again is a new logical request. Reusing this ID
+            // would correctly receive the same terminal 409 forever.
+            generationRequestID = UUID()
+            failureMessage = Self.duplicateMessage
+            state = .failed
+            return
+        }
         failureMessage = friendlyMessage(for: error)
         state = .failed
     }
@@ -119,6 +129,8 @@ final class ResultsViewModel {
         } catch {
             if case APIError.quotaExceeded = error {
                 onQuotaExhausted()
+            } else if case APIError.duplicateRequest = error {
+                inlineError = Self.duplicateMessage
             } else if case APIError.offline = error {
                 inlineError = Self.offlineMessage
             } else {

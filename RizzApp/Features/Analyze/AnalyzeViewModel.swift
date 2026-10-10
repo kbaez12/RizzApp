@@ -138,6 +138,9 @@ final class AnalyzeViewModel {
             switch error {
             case APIError.quotaExceeded:
                 showUpgrade()
+            case APIError.duplicateRequest:
+                requestID = UUID()
+                append(.error(ChatViewModel.duplicateMessage))
             case APIError.offline:
                 append(.error(ChatViewModel.offlineMessage))
             case APIError.timeout:

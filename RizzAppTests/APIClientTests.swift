@@ -55,6 +55,25 @@ final class APIClientTests: XCTestCase {
         MockURLProtocol.handler = { _ in (status, Data(json.utf8), headers) }
     }
 
+    func testHostedDevelopmentConfigRequiresExplicitMatchingProjectRef() {
+        let url = URL(string: "https://devproject.supabase.co")!
+        let key = "sb_publishable_test"
+
+        XCTAssertNil(APIConfig.development(baseURL: url, publishableKey: key))
+        XCTAssertNil(APIConfig.development(
+            baseURL: url,
+            publishableKey: key,
+            hostedProjectRef: "different",
+            allowHosted: true
+        ))
+        XCTAssertNotNil(APIConfig.development(
+            baseURL: url,
+            publishableKey: key,
+            hostedProjectRef: "devproject",
+            allowHosted: true
+        ))
+    }
+
     // MARK: Success decoding
 
     func testSuccessfulGenerationDecode() async throws {
@@ -145,6 +164,22 @@ final class APIClientTests: XCTestCase {
         } catch APIError.quotaExceeded(let usage) {
             XCTAssertEqual(usage?.remaining, 0)
             XCTAssertEqual(usage?.limit, 5)
+        }
+    }
+
+    func testDuplicateRequestMappingCarriesUsage() async throws {
+        stub(status: 409, json: """
+        {
+          "error": { "code": "DUPLICATE_REQUEST", "message": "Already processed." },
+          "usage": { "remaining": 4, "limit": 5, "tier": "free", "refinements_remaining": 2 }
+        }
+        """)
+        do {
+            let _: UsageStatus = try await client.send(.usage)
+            XCTFail("Expected duplicateRequest")
+        } catch APIError.duplicateRequest(let usage) {
+            XCTAssertEqual(usage?.remaining, 4)
+            XCTAssertEqual(usage?.refinementsRemaining, 2)
         }
     }
 

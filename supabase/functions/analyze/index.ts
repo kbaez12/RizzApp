@@ -5,7 +5,7 @@
 // idempotent on request_id. Nothing about the conversation is stored or
 // logged.
 
-import { withSupabase } from "@supabase/server";
+import { withSupabase } from "npm:@supabase/server@1";
 import { CANNED_ANALYSIS, produceAnalysis } from "../_shared/analysis.ts";
 import {
   type GenerationRequestBody,
@@ -15,6 +15,7 @@ import { handleOptions } from "../_shared/cors.ts";
 import { configuredModel } from "../_shared/openai.ts";
 import { preflight } from "../_shared/request.ts";
 import { errorJson, json } from "../_shared/responses.ts";
+import { performReservedOperation } from "../_shared/idempotency.ts";
 
 export default {
   fetch: withSupabase({ auth: "publishable" }, async (req, ctx) => {
@@ -24,7 +25,11 @@ export default {
     const scenario = req.headers.get("x-debug-scenario");
     const useCanned = devSimulation && scenario === "canned";
 
-    const log = (status: number, category: string, metrics?: Record<string, unknown>) =>
+    const log = (
+      status: number,
+      category: string,
+      metrics?: Record<string, unknown>,
+    ) =>
       console.log(JSON.stringify({
         requestLogId,
         fn: "analyze",
@@ -69,42 +74,55 @@ export default {
       }, req);
     }
 
-    const isDuplicate = reservation.outcome === "duplicate";
     try {
-      if (devSimulation && scenario === "fail_after_reserve") {
-        throw new Error("simulated analysis failure");
-      }
+      const guarded = await performReservedOperation(
+        reservation,
+        req,
+        async () => {
+          if (devSimulation && scenario === "fail_after_reserve") {
+            throw new Error("simulated analysis failure");
+          }
 
-      let analysis = CANNED_ANALYSIS;
-      let metrics: Record<string, unknown> = {};
-      if (!useCanned) {
-        const produced = await produceAnalysis(body);
-        analysis = produced.analysis;
-        metrics = {
-          model: configuredModel(),
-          inputTokens: produced.inputTokens,
-          outputTokens: produced.outputTokens,
-        };
-      }
+          if (useCanned) {
+            return {
+              analysis: CANNED_ANALYSIS,
+              metrics: {} as Record<string, unknown>,
+            };
+          }
 
-      if (isDuplicate) {
-        log(200, "duplicate_request", metrics);
-        return json(200, { analysis, usage: reservation.usage }, req);
+          const produced = await produceAnalysis(body);
+          return {
+            analysis: produced.analysis,
+            metrics: {
+              model: configuredModel(),
+              inputTokens: produced.inputTokens,
+              outputTokens: produced.outputTokens,
+            },
+          };
+        },
+      );
+
+      if (!guarded.performed) {
+        log(409, "duplicate_request", {
+          priorStatus: reservation.prior_status ?? null,
+        });
+        return guarded.response;
       }
+      const { analysis, metrics } = guarded.value;
 
       const { data: commit, error: commitError } = await ctx.supabaseAdmin
-        .rpc("commit_reservation", { p_reservation_id: reservation.reservation_id });
+        .rpc("commit_reservation", {
+          p_reservation_id: reservation.reservation_id,
+        });
       log(200, commitError ? "commit_failed" : "analysis", metrics);
       return json(200, {
         analysis,
         usage: commitError ? reservation.usage : commit.usage,
       }, req);
     } catch {
-      if (!isDuplicate) {
-        await ctx.supabaseAdmin.rpc("release_reservation", {
-          p_reservation_id: reservation.reservation_id,
-        });
-      }
+      await ctx.supabaseAdmin.rpc("release_reservation", {
+        p_reservation_id: reservation.reservation_id,
+      });
       log(500, "analysis_failed_refunded");
       return errorJson(500, "ANALYSIS_FAILED", "Analysis failed.", {}, req);
     }

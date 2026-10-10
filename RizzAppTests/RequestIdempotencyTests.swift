@@ -6,6 +6,7 @@ private final class SpyGenerationService: GenerationServicing {
     var generateRequestIDs: [UUID] = []
     var refineRequestIDs: [UUID] = []
     var shouldFail = false
+    var thrownError: Error?
 
     private let canned = [
         GeneratedResponse(type: .natural, label: "Natural", text: "a"),
@@ -19,6 +20,7 @@ private final class SpyGenerationService: GenerationServicing {
         requestID: UUID
     ) async throws -> [GeneratedResponse] {
         generateRequestIDs.append(requestID)
+        if let thrownError { throw thrownError }
         if shouldFail { throw GenerationError.failed }
         return canned
     }
@@ -31,6 +33,7 @@ private final class SpyGenerationService: GenerationServicing {
         requestID: UUID
     ) async throws -> [GeneratedResponse] {
         refineRequestIDs.append(requestID)
+        if let thrownError { throw thrownError }
         if shouldFail { throw GenerationError.failed }
         return canned
     }
@@ -75,6 +78,22 @@ final class RequestIdempotencyTests: XCTestCase {
 
         XCTAssertEqual(spy.generateRequestIDs.count, 2)
         XCTAssertNotEqual(spy.generateRequestIDs[0], spy.generateRequestIDs[1])
+    }
+
+    func testDuplicateResponseMakesRetryUseFreshRequestID() async {
+        let spy = SpyGenerationService()
+        let model = makeModel(spy: spy)
+
+        spy.thrownError = APIError.duplicateRequest(nil)
+        await model.generate()
+        spy.thrownError = nil
+        await model.generate(isRetry: true)
+
+        XCTAssertEqual(spy.generateRequestIDs.count, 2)
+        XCTAssertNotEqual(
+            spy.generateRequestIDs[0], spy.generateRequestIDs[1],
+            "A terminal duplicate ID must not be submitted repeatedly"
+        )
     }
 
     func testEachRefinementGetsDistinctRequestID() async {

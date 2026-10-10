@@ -36,6 +36,21 @@ struct AppServices {
         )
     }
 
+    /// Development-only live backend wiring. Purchases stay mocked so a
+    /// development API test cannot contact RevenueCat or alter entitlements.
+    static func liveDevelopment(config: APIConfig) -> AppServices {
+        let identity = KeychainInstallationIdentityService()
+        let installationID = identity.installationID
+        let client = APIClient(config: config, installationID: installationID)
+        let usage = LiveUsageService(client: client)
+        return AppServices(
+            generation: LiveGenerationService(client: client) { usage.apply($0) },
+            analysis: LiveAnalysisService(client: client) { usage.apply($0) },
+            usage: usage,
+            subscription: MockSubscriptionService()
+        )
+    }
+
     /// The single wiring point — resolved once from `AppConfig.serviceMode`.
     /// Views and ViewModels never know which mode is active.
     static let current: AppServices = {
@@ -43,7 +58,10 @@ struct AppServices {
         case .mock:
             return .mock
         case .liveDevelopment:
-            return .live(config: AppConfig.api)
+            guard let config = AppConfig.developmentAPI else {
+                return .mock
+            }
+            return .liveDevelopment(config: config)
         }
     }()
 }

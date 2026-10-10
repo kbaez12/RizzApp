@@ -11,7 +11,7 @@
 // model, token counts. NEVER conversation text, base64, prompts, or
 // generated replies.
 
-import { withSupabase } from "@supabase/server";
+import { withSupabase } from "npm:@supabase/server@1";
 import { produceReplies } from "../_shared/generation.ts";
 import { configuredModel } from "../_shared/openai.ts";
 import { preflight } from "../_shared/request.ts";
@@ -22,6 +22,7 @@ import {
 } from "../_shared/contracts.ts";
 import { errorJson, json } from "../_shared/responses.ts";
 import { handleOptions } from "../_shared/cors.ts";
+import { performReservedOperation } from "../_shared/idempotency.ts";
 import {
   CANNED_REFINED,
   CANNED_RESPONSES,
@@ -35,7 +36,13 @@ import {
 function simulatedResponse(scenario: string, req: Request): Response | null {
   switch (scenario) {
     case "invalid_request":
-      return errorJson(400, "INVALID_REQUEST", "Simulated bad request.", {}, req);
+      return errorJson(
+        400,
+        "INVALID_REQUEST",
+        "Simulated bad request.",
+        {},
+        req,
+      );
     case "unauthorized":
       return errorJson(401, "UNAUTHORIZED", "Simulated auth failure.", {}, req);
     case "quota":
@@ -143,44 +150,45 @@ export default {
       }, req);
     }
 
-    if (reservation.outcome === "duplicate") {
-      // Idempotent retry: quota was already decided. We do not store
-      // generated replies (privacy), so we regenerate without charging.
-      // Dev "canned" scenario still returns the fixture set.
-      try {
-        const responses = scenario === "canned" && devSimulation
-          ? cannedResponses(body)
-          : (await produceReplies(body)).responses;
-        log(200, "duplicate_request", body.input?.kind);
-        return json(200, { responses, usage: reservation.usage }, req);
-      } catch {
-        log(500, "duplicate_regenerate_failed", body.input?.kind);
-        return errorJson(500, "GENERATION_FAILED", "Generation failed.", {}, req);
-      }
-    }
-
     // ---- GENERATE (real OpenAI; refunds on failure) ----
     try {
-      if (scenario === "fail_after_reserve" && devSimulation) {
-        throw new Error("simulated generation failure");
-      }
+      const guarded = await performReservedOperation(
+        reservation,
+        req,
+        async () => {
+          if (scenario === "fail_after_reserve" && devSimulation) {
+            throw new Error("simulated generation failure");
+          }
 
-      let responses;
-      let metrics: Record<string, unknown> = {};
-      if (scenario === "canned" && devSimulation) {
-        // Dev-only: exercises quota/idempotency without spending API calls.
-        responses = cannedResponses(body);
-      } else {
-        const produced = await produceReplies(body);
-        responses = produced.responses;
-        metrics = {
-          model: configuredModel(),
-          inputTokens: produced.inputTokens,
-          outputTokens: produced.outputTokens,
-          retried: produced.retried,
-          remainingProblems: produced.remainingProblems,
-        };
+          if (scenario === "canned" && devSimulation) {
+            // Dev-only: exercises quota/idempotency without spending API calls.
+            return {
+              responses: cannedResponses(body),
+              metrics: {} as Record<string, unknown>,
+            };
+          }
+
+          const produced = await produceReplies(body);
+          return {
+            responses: produced.responses,
+            metrics: {
+              model: configuredModel(),
+              inputTokens: produced.inputTokens,
+              outputTokens: produced.outputTokens,
+              retried: produced.retried,
+              remainingProblems: produced.remainingProblems,
+            },
+          };
+        },
+      );
+
+      if (!guarded.performed) {
+        log(409, "duplicate_request", body.input?.kind, {
+          priorStatus: reservation.prior_status ?? null,
+        });
+        return guarded.response;
       }
+      const { responses, metrics } = guarded.value;
 
       // ---- COMMIT ----
       const { data: commit, error: commitError } = await ctx.supabaseAdmin

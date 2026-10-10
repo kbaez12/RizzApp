@@ -9,6 +9,9 @@ enum APIError: Error {
     /// Server refused because quota is exhausted (HTTP 402). Carries the
     /// server's usage snapshot when the error body included one.
     case quotaExceeded(UsageStatus?)
+    /// The idempotency key already reached the backend. Results are not
+    /// persisted for privacy, so the user must start a fresh logical request.
+    case duplicateRequest(UsageStatus?)
     case rateLimited(retryAfter: TimeInterval?)
     /// Client-side or server-side invalid request (HTTP 400).
     case invalidRequest(message: String?)
