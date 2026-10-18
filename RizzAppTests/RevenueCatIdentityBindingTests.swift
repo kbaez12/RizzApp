@@ -81,8 +81,10 @@ final class RevenueCatIdentitySynchronizerTests: XCTestCase {
         let didLogIn = try await sync.authenticate(userA)
 
         XCTAssertTrue(didLogIn)
-        XCTAssertEqual(await sync.authenticatedUserID, userA.id)
-        XCTAssertEqual(await logins.ids, [userA.id])
+        let authenticatedID = await sync.authenticatedUserID
+        XCTAssertEqual(authenticatedID, userA.id)
+        let recordedIDs = await logins.ids
+        XCTAssertEqual(recordedIDs, [userA.id])
     }
 
     func testReturningSameUserSkipsRevenueCatLogin() async throws {
@@ -95,8 +97,10 @@ final class RevenueCatIdentitySynchronizerTests: XCTestCase {
         let didLogInAgain = try await sync.authenticate(userA)
 
         XCTAssertFalse(didLogInAgain)
-        XCTAssertEqual(await logins.ids, [userA.id])
-        XCTAssertEqual(await sync.authenticatedUserID, userA.id)
+        let recordedIDs = await logins.ids
+        XCTAssertEqual(recordedIDs, [userA.id])
+        let authenticatedID = await sync.authenticatedUserID
+        XCTAssertEqual(authenticatedID, userA.id)
     }
 
     func testSwitchingFromUserAToUserBRequiresANewLogin() async throws {
@@ -109,8 +113,10 @@ final class RevenueCatIdentitySynchronizerTests: XCTestCase {
         let didLogInB = try await sync.authenticate(userB)
 
         XCTAssertTrue(didLogInB)
-        XCTAssertEqual(await sync.authenticatedUserID, userB.id)
-        XCTAssertEqual(await logins.ids, [userA.id, userB.id])
+        let authenticatedID = await sync.authenticatedUserID
+        XCTAssertEqual(authenticatedID, userB.id)
+        let recordedIDs = await logins.ids
+        XCTAssertEqual(recordedIDs, [userA.id, userB.id])
     }
 
     func testFailedRevenueCatAuthenticationForUserBClearsBinding() async {
@@ -130,7 +136,8 @@ final class RevenueCatIdentitySynchronizerTests: XCTestCase {
             _ = try await sync.authenticate(userB)
             XCTFail("user B login should fail")
         } catch SubscriptionError.verificationUnavailable {
-            XCTAssertNil(await sync.authenticatedUserID)
+            let authenticatedID = await sync.authenticatedUserID
+            XCTAssertNil(authenticatedID)
         } catch {
             XCTFail("Unexpected \(error)")
         }
@@ -145,7 +152,8 @@ final class RevenueCatIdentitySynchronizerTests: XCTestCase {
             _ = try await sync.authenticate(userA)
             XCTFail("expected failure")
         } catch SubscriptionError.verificationUnavailable {
-            XCTAssertNil(await sync.authenticatedUserID)
+            let authenticatedID = await sync.authenticatedUserID
+            XCTAssertNil(authenticatedID)
         } catch {
             XCTFail("Unexpected \(error)")
         }
@@ -165,14 +173,16 @@ final class RevenueCatIdentitySynchronizerTests: XCTestCase {
         await gate.waitUntilStarted()
 
         _ = try await sync.authenticate(userB)
-        XCTAssertEqual(await sync.authenticatedUserID, userB.id)
+        let authenticatedIDAfterB = await sync.authenticatedUserID
+        XCTAssertEqual(authenticatedIDAfterB, userB.id)
 
         await gate.releaseFirst()
         do {
             _ = try await first.value
             XCTFail("stale user A login must not succeed")
         } catch SubscriptionError.verificationUnavailable {
-            XCTAssertEqual(await sync.authenticatedUserID, userB.id)
+            let authenticatedIDAfterStaleA = await sync.authenticatedUserID
+            XCTAssertEqual(authenticatedIDAfterStaleA, userB.id)
         }
     }
 }
