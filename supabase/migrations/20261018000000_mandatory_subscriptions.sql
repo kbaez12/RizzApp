@@ -663,6 +663,32 @@ begin
 end;
 $$;
 
+-- Server-only authoritative observation after ambiguous commit acknowledgments.
+-- Does not mutate or release: reserved can race a commit still in flight.
+-- Committed is terminal, so a committed read is sufficient proof for delivery.
+-- Only reservation metadata is returned; AI input/output is never stored.
+create function public.get_user_reservation_status(p_reservation_id uuid)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_res public.user_usage_requests;
+  v_user_id uuid;
+begin
+  select * into v_res from public.user_usage_requests
+  where reservation_id = p_reservation_id;
+  if not found then
+    return jsonb_build_object('status', 'missing');
+  end if;
+  select user_id into v_user_id from public.billing_accounts
+  where id = v_res.billing_account_id;
+  return jsonb_build_object('status', v_res.status,
+    'usage', public.user_usage_status(v_user_id));
+end;
+$$;
+
 create function public.get_user_usage(p_user_id uuid)
 returns jsonb
 language plpgsql
@@ -693,6 +719,8 @@ revoke execute on function public.reserve_user_usage(uuid, uuid, text)
   from public, anon, authenticated;
 revoke execute on function public.commit_user_reservation(uuid)
   from public, anon, authenticated;
+revoke execute on function public.get_user_reservation_status(uuid)
+  from public, anon, authenticated;
 revoke execute on function public.get_user_usage(uuid)
   from public, anon, authenticated;
 
@@ -705,6 +733,8 @@ grant execute on function public.release_user_reservation(uuid) to service_role;
 grant execute on function public.reserve_user_usage(uuid, uuid, text)
   to service_role;
 grant execute on function public.commit_user_reservation(uuid)
+  to service_role;
+grant execute on function public.get_user_reservation_status(uuid)
   to service_role;
 grant execute on function public.get_user_usage(uuid) to service_role;
 

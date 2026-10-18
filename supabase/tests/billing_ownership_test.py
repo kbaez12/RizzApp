@@ -367,6 +367,114 @@ class MonthlyAllowanceTests(unittest.TestCase):
         sql(f"select public.release_user_reservation({quote(current)})")
         self.assertEqual(usage()['remaining'], 200)
 
+
+class DurableAccountingTests(unittest.TestCase):
+    def setUp(self):
+        sql('truncate public.billing_accounts, public.revenuecat_webhook_events cascade')
+        event()
+
+    def rpc(self, name, reservation):
+        return json.loads(sql(f'select public.{name}({quote(reservation)})'))
+
+    def test_status_is_server_only(self):
+        for role in ['anon', 'authenticated']:
+            self.assertEqual(sql(f"select has_function_privilege('{role}', 'public.get_user_reservation_status(uuid)', 'execute')"), 'f')
+        self.assertEqual(sql("select has_function_privilege('service_role', 'public.get_user_reservation_status(uuid)', 'execute')"), 't')
+
+    def test_authoritative_states_and_idempotent_commit(self):
+        r = reserve()['reservation_id']
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'reserved')
+        for _ in range(3):
+            self.assertEqual(self.rpc('commit_user_reservation', r)['outcome'], 'committed')
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'committed')
+        self.assertEqual(self.rpc('release_user_reservation', r)['outcome'], 'noop')
+        self.assertEqual(usage()['remaining'], 199)
+        self.assertEqual(self.rpc('get_user_reservation_status', str(uuid.uuid4()))['status'], 'missing')
+
+    def test_released_operation_cannot_commit(self):
+        r = reserve()['reservation_id']
+        self.rpc('release_user_reservation', r)
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'released')
+        self.assertEqual(self.rpc('commit_user_reservation', r)['outcome'], 'not_reserved')
+        self.assertEqual(usage()['remaining'], 200)
+
+    def test_unconfirmed_uncommitted_operation_expires_and_refunds_once(self):
+        r = reserve()['reservation_id']
+        sql("update public.user_usage_requests set expires_at=now()-interval '1 second'")
+        reserve()
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'released')
+        self.assertEqual(usage()['remaining'], 199)
+        self.assertEqual(self.rpc('release_user_reservation', r)['outcome'], 'noop')
+        self.assertEqual(usage()['remaining'], 199)
+
+    def test_committed_with_lost_ack_cannot_expire_to_free(self):
+        r = reserve()['reservation_id']
+        # Discard the successful mutation reply, as if the transport lost it.
+        self.rpc('commit_user_reservation', r)
+        sql("update public.user_usage_requests set expires_at=now()-interval '1 second'")
+        reserve()
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'committed')
+        self.assertEqual(usage()['remaining'], 198)
+
+    def test_duplicate_after_lost_ack_never_charges_again(self):
+        request = str(uuid.uuid4())
+        statement = f"select public.reserve_user_usage({quote(A)}, {quote(request)}, 'generation')"
+        r = json.loads(sql(statement))['reservation_id']
+        self.rpc('commit_user_reservation', r)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: json.loads(sql(statement)), range(4)))
+        self.assertTrue(all(v['outcome'] == 'duplicate' and v['prior_status'] == 'committed' for v in results))
+        self.assertEqual(usage()['remaining'], 199)
+
+    def test_duplicate_uncertain_reserved_and_released_no_second_charge(self):
+        request = str(uuid.uuid4())
+        statement = f"select public.reserve_user_usage({quote(A)}, {quote(request)}, 'generation')"
+        r = json.loads(sql(statement))['reservation_id']
+        for state in ['reserved', 'released']:
+            if state == 'released':
+                self.rpc('release_user_reservation', r)
+            duplicate = json.loads(sql(statement))
+            self.assertEqual(duplicate['outcome'], 'duplicate')
+            self.assertEqual(duplicate['prior_status'], state)
+        self.assertEqual(usage()['remaining'], 200)
+
+    def test_old_window_expiration_after_accounting_failure_cannot_credit_current(self):
+        r = reserve()['reservation_id']
+        sql("update public.user_usage_requests set allowance_period_started_at=allowance_period_started_at-interval '1 month', expires_at=now()-interval '1 second'")
+        sql('update public.user_usage set analyses_used=10, refinements_remaining=0')
+        reserve()
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'released')
+        self.assertEqual(usage()['remaining'], 189)
+        self.assertEqual(usage()['refinements_remaining'], 2)
+
+    def test_failed_refinement_expiration_restores_credit(self):
+        charged = reserve()['reservation_id']
+        self.rpc('commit_user_reservation', charged)
+        r = reserve(action='refinement')['reservation_id']
+        sql(f"update public.user_usage_requests set expires_at=now()-interval '1 second' where reservation_id={quote(r)}")
+        # A new reservation drives stale cleanup; this refinement then uses one.
+        reserve(action='refinement')
+        self.assertEqual(self.rpc('get_user_reservation_status', r)['status'], 'released')
+        self.assertEqual(usage()['remaining'], 199)
+        self.assertEqual(usage()['refinements_remaining'], 1)
+
+    def test_concurrent_commit_retries_near_limit(self):
+        sql('update public.user_usage set analyses_used=199')
+        r = reserve()['reservation_id']
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(lambda _: self.rpc('commit_user_reservation', r), range(6)))
+        self.assertTrue(all(v['outcome'] == 'committed' for v in results))
+        self.assertEqual(reserve()['outcome'], 'usage_limit_exceeded')
+        self.assertEqual(usage()['remaining'], 0)
+
+    def test_old_window_commit_does_not_change_current_counters(self):
+        r = reserve()['reservation_id']
+        sql("update public.user_usage_requests set allowance_period_started_at=allowance_period_started_at-interval '1 month'")
+        sql('update public.user_usage set analyses_used=5, refinements_remaining=0')
+        self.assertEqual(self.rpc('commit_user_reservation', r)['outcome'], 'committed')
+        self.assertEqual(usage()['remaining'], 195)
+        self.assertEqual(usage()['refinements_remaining'], 0)
+
 if __name__ == '__main__':
     # No supplied DSN, no hosted project, generated disposable database name.
     sql(f'create database {DB}', database='postgres')

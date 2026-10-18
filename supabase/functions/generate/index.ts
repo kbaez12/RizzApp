@@ -18,9 +18,9 @@ import {
   type GenerationRequestBody,
   validateGenerationRequest,
 } from "../_shared/contracts.ts";
-import { errorJson, json } from "../_shared/responses.ts";
+import { errorJson } from "../_shared/responses.ts";
 import { handleOptions } from "../_shared/cors.ts";
-import { performReservedOperation } from "../_shared/idempotency.ts";
+import { deliverReservedOperation } from "../_shared/idempotency.ts";
 import {
   CANNED_REFINED,
   CANNED_RESPONSES,
@@ -46,9 +46,15 @@ function simulatedResponse(scenario: string, req: Request): Response | null {
     case "unauthorized":
       return errorJson(401, "UNAUTHORIZED", "Simulated auth failure.", {}, req);
     case "quota":
-      return errorJson(429, "USAGE_LIMIT_EXCEEDED", "Monthly usage limit reached.", {
-        usage: CANNED_USAGE_EXHAUSTED,
-      }, req);
+      return errorJson(
+        429,
+        "USAGE_LIMIT_EXCEEDED",
+        "Monthly usage limit reached.",
+        {
+          usage: CANNED_USAGE_EXHAUSTED,
+        },
+        req,
+      );
     case "rate_limit":
       return errorJson(429, "RATE_LIMITED", "Slow down.", {
         extraHeaders: { "Retry-After": "30" },
@@ -75,149 +81,152 @@ function cannedResponses(body: GenerationRequestBody) {
     : CANNED_RESPONSES;
 }
 
-export default {
-  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
-    const startedAt = Date.now();
-    const requestLogId = crypto.randomUUID();
-    const devSimulation = Deno.env.get("DEV_ERROR_SIMULATION") === "true";
-    // New additive RPCs are not present in @supabase/server's ungenerated
-    // Database type. Keep this cast scoped to the trusted service-role client.
-    // deno-lint-ignore no-explicit-any
-    const admin = ctx.supabaseAdmin as any;
+// Export the authenticated handler for focused RPC/model failure tests.
+export async function handleGenerate(
+  req: Request,
+  ctx: {
+    supabaseAdmin: unknown;
+    userClaims: { id?: unknown; sub?: unknown } | null;
+  },
+  produce = produceReplies,
+): Promise<Response> {
+  const startedAt = Date.now();
+  const requestLogId = crypto.randomUUID();
+  const devSimulation = Deno.env.get("DEV_ERROR_SIMULATION") === "true";
+  // New additive RPCs are not present in @supabase/server's ungenerated
+  // Database type. Keep this cast scoped to the trusted service-role client.
+  // deno-lint-ignore no-explicit-any
+  const admin = ctx.supabaseAdmin as any;
 
-    const log = (
-      status: number,
-      category: string,
-      kind?: string,
-      metrics?: Record<string, unknown>,
-    ) => {
-      console.log(JSON.stringify({
-        requestLogId,
-        fn: "generate",
-        status,
-        category,
-        kind: kind ?? null,
-        ms: Date.now() - startedAt,
-        ...(metrics ?? {}),
-      }));
-    };
+  const log = (
+    status: number,
+    category: string,
+    kind?: string,
+    metrics?: Record<string, unknown>,
+  ) => {
+    console.log(JSON.stringify({
+      requestLogId,
+      fn: "generate",
+      status,
+      category,
+      kind: kind ?? null,
+      ms: Date.now() - startedAt,
+      ...(metrics ?? {}),
+    }));
+  };
 
-    if (req.method === "OPTIONS") {
-      return handleOptions(req);
+  if (req.method === "OPTIONS") {
+    return handleOptions(req);
+  }
+  if (req.method !== "POST") {
+    log(405, "method_not_allowed");
+    return errorJson(405, "METHOD_NOT_ALLOWED", "Use POST.", {}, req);
+  }
+
+  const scenario = req.headers.get("x-debug-scenario");
+  if (scenario && devSimulation) {
+    const simulated = simulatedResponse(scenario, req);
+    if (simulated) {
+      log(simulated.status, `simulated_${scenario}`);
+      return simulated;
     }
-    if (req.method !== "POST") {
-      log(405, "method_not_allowed");
-      return errorJson(405, "METHOD_NOT_ALLOWED", "Use POST.", {}, req);
-    }
+  }
 
-    const scenario = req.headers.get("x-debug-scenario");
-    if (scenario && devSimulation) {
-      const simulated = simulatedResponse(scenario, req);
-      if (simulated) {
-        log(simulated.status, `simulated_${scenario}`);
-        return simulated;
-      }
-    }
+  const userId = authenticatedUserId(ctx.userClaims);
+  const pre = await preflight(req, admin, userId);
+  if (!pre.ok) {
+    log(pre.response.status, pre.category);
+    return pre.response;
+  }
+  const { parsed } = pre;
 
-    const userId = authenticatedUserId(ctx.userClaims);
-    const pre = await preflight(req, admin, userId);
-    if (!pre.ok) {
-      log(pre.response.status, pre.category);
-      return pre.response;
-    }
-    const { parsed } = pre;
+  const validation = validateGenerationRequest(parsed);
+  if (!validation.ok) {
+    log(400, "invalid_request");
+    return errorJson(400, "INVALID_REQUEST", validation.message, {}, req);
+  }
 
-    const validation = validateGenerationRequest(parsed);
-    if (!validation.ok) {
-      log(400, "invalid_request");
-      return errorJson(400, "INVALID_REQUEST", validation.message, {}, req);
-    }
+  const body = parsed as GenerationRequestBody;
+  const actionKind = classifyAction(body);
 
-    const body = parsed as GenerationRequestBody;
-    const actionKind = classifyAction(body);
-
-    // ---- RESERVE (atomic, in Postgres; idempotent per request_id) ----
-    const { data: reservation, error: reserveError } = await admin
+  // ---- RESERVE (atomic, in Postgres; idempotent per request_id) ----
+  let reservation;
+  let reserveError;
+  try {
+    ({ data: reservation, error: reserveError } = await admin
       .rpc("reserve_user_usage", {
         p_user_id: userId,
         p_request_id: body.request_id,
         p_action_kind: actionKind,
-      });
-    if (reserveError || !reservation) {
-      log(500, "reserve_failed");
-      return errorJson(500, "INTERNAL", "Could not process request.", {}, req);
-    }
+      }));
+  } catch {
+    log(503, "reserve_unconfirmed");
+    return errorJson(
+      503,
+      "ACCOUNTING_UNCONFIRMED",
+      "Could not confirm reservation. Retry with the same request ID.",
+      {},
+      req,
+    );
+  }
+  if (reserveError || !reservation) {
+    log(500, "reserve_failed");
+    return errorJson(
+      503,
+      "ACCOUNTING_UNCONFIRMED",
+      "Could not confirm reservation. Retry with the same request ID.",
+      {},
+      req,
+    );
+  }
 
-    const denial = reservationDenial(reservation.outcome);
-    if (denial) {
-      log(denial.status, denial.category, body.input?.kind);
-      return errorJson(denial.status, denial.code, denial.message, {
-        usage: reservation.usage,
-      }, req);
-    }
+  const denial = reservationDenial(reservation.outcome);
+  if (denial) {
+    log(denial.status, denial.category, body.input?.kind);
+    return errorJson(denial.status, denial.code, denial.message, {
+      usage: reservation.usage,
+    }, req);
+  }
 
-    // ---- GENERATE (real OpenAI; refunds on failure) ----
-    try {
-      const guarded = await performReservedOperation(
-        reservation,
-        req,
-        async () => {
-          if (scenario === "fail_after_reserve" && devSimulation) {
-            throw new Error("simulated generation failure");
-          }
+  return await deliverReservedOperation(
+    admin,
+    reservation,
+    req,
+    async () => {
+      if (scenario === "fail_after_reserve" && devSimulation) {
+        throw new Error("simulated generation failure");
+      }
 
-          if (scenario === "canned" && devSimulation) {
-            // Dev-only: exercises quota/idempotency without spending API calls.
-            return {
-              responses: cannedResponses(body),
-              metrics: {} as Record<string, unknown>,
-            };
-          }
+      if (scenario === "canned" && devSimulation) {
+        // Dev-only: exercises quota/idempotency without spending API calls.
+        return {
+          responses: cannedResponses(body),
+          metrics: {} as Record<string, unknown>,
+        };
+      }
 
-          const produced = await produceReplies(body);
-          return {
-            responses: produced.responses,
-            metrics: {
-              model: configuredModel(),
-              inputTokens: produced.inputTokens,
-              outputTokens: produced.outputTokens,
-              retried: produced.retried,
-              remainingProblems: produced.remainingProblems,
-            },
-          };
+      const produced = await produce(body);
+      return {
+        responses: produced.responses,
+        metrics: {
+          model: configuredModel(),
+          inputTokens: produced.inputTokens,
+          outputTokens: produced.outputTokens,
+          retried: produced.retried,
+          remainingProblems: produced.remainingProblems,
         },
-      );
+      };
+    },
+    (value) => ({ responses: value.responses }),
+    "GENERATION_FAILED",
+    (status, category, value) =>
+      log(status, category, body.input?.kind, {
+        reservationId: reservation.reservation_id,
+        ...value?.metrics,
+      }),
+  );
+}
 
-      if (!guarded.performed) {
-        log(409, "duplicate_request", body.input?.kind, {
-          priorStatus: reservation.prior_status ?? null,
-        });
-        return guarded.response;
-      }
-      const { responses, metrics } = guarded.value;
-
-      // ---- COMMIT ----
-      const { data: commit, error: commitError } = await admin
-        .rpc("commit_user_reservation", {
-          p_reservation_id: reservation.reservation_id,
-        });
-      if (commitError) {
-        // Work succeeded but commit failed — return the result anyway with
-        // the reserve-time usage; reservation will expire → auto-release
-        // (we favor the user over double-charging).
-        log(200, "commit_failed", body.input?.kind, metrics);
-        return json(200, { responses, usage: reservation.usage }, req);
-      }
-
-      log(200, actionKind, body.input?.kind, metrics);
-      return json(200, { responses, usage: commit.usage }, req);
-    } catch {
-      // ---- RELEASE / REFUND: user never loses quota to a server failure.
-      await admin.rpc("release_user_reservation", {
-        p_reservation_id: reservation.reservation_id,
-      });
-      log(500, "generation_failed_refunded", body.input?.kind);
-      return errorJson(500, "GENERATION_FAILED", "Generation failed.", {}, req);
-    }
-  }),
+export default {
+  fetch: withSupabase({ auth: "user" }, (req, ctx) => handleGenerate(req, ctx)),
 };
