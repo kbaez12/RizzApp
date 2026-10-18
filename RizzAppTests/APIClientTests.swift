@@ -30,8 +30,6 @@ final class MockURLProtocol: URLProtocol {
 final class APIClientTests: XCTestCase {
     private var client: APIClient!
 
-    private static let testInstallationID = "11111111-2222-4333-8444-555555555555"
-
     override func setUp() {
         super.setUp()
         let configuration = URLSessionConfiguration.ephemeral
@@ -41,8 +39,8 @@ final class APIClientTests: XCTestCase {
                 baseURL: URL(string: "https://unit-test.invalid")!,
                 publishableKey: "sb_publishable_test"
             ),
-            installationID: Self.testInstallationID,
-            session: URLSession(configuration: configuration)
+            session: URLSession(configuration: configuration),
+            accessToken: { "test-user-jwt" }
         )
     }
 
@@ -72,6 +70,130 @@ final class APIClientTests: XCTestCase {
             hostedProjectRef: "devproject",
             allowHosted: true
         ))
+    }
+
+    func testAnonymousAuthCreatesSessionAndReturnsBearerToken() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        var captured: URLRequest?
+        MockURLProtocol.handler = { request in
+            captured = request
+            return (200, Data("""
+            {
+              "access_token": "anonymous-jwt",
+              "refresh_token": "refresh-token",
+              "expires_in": 3600,
+              "user": { "id": "11111111-2222-4333-8444-555555555555" }
+            }
+            """.utf8), [:])
+        }
+        let store = MemoryAuthTokenStore()
+        let auth = SupabaseAuthService(
+            config: APIConfig(
+                baseURL: URL(string: "https://unit-test.invalid")!,
+                publishableKey: "sb_publishable_test"
+            ),
+            session: URLSession(configuration: configuration),
+            tokenStore: store
+        )
+
+        let user = try await auth.authenticatedUser()
+
+        XCTAssertEqual(user.id, "11111111-2222-4333-8444-555555555555")
+        XCTAssertEqual(user.accessToken, "anonymous-jwt")
+        XCTAssertEqual(store.token, "refresh-token")
+        XCTAssertEqual(captured?.url?.path, "/auth/v1/signup")
+        XCTAssertEqual(
+            captured?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer sb_publishable_test"
+        )
+        XCTAssertEqual(captured?.httpBody, Data("{}".utf8))
+    }
+
+    func testRefreshServerErrorPreservesAnonymousIdentity() async {
+        await assertRefreshPreservesIdentity(status: 503, json: #"{ "error": "unavailable" }"#)
+    }
+
+    func testRefreshRateLimitPreservesAnonymousIdentity() async {
+        await assertRefreshPreservesIdentity(status: 429, json: #"{ "error": "over_request_rate_limit" }"#)
+    }
+
+    func testMalformedRefreshSuccessPreservesAnonymousIdentity() async {
+        await assertRefreshPreservesIdentity(status: 200, json: "this is not a session {")
+    }
+
+    func testIncompleteRefreshSuccessPreservesAnonymousIdentity() async {
+        await assertRefreshPreservesIdentity(
+            status: 200,
+            json: #"{ "access_token": "partial", "expires_in": 3600 }"#
+        )
+    }
+
+    func testAmbiguousRefreshClientErrorPreservesAnonymousIdentity() async {
+        await assertRefreshPreservesIdentity(status: 400, json: #"{ "msg": "bad request" }"#)
+        await assertRefreshPreservesIdentity(status: 403, json: "{}")
+    }
+
+    func testConfirmedInvalidRefreshTokenMintsReplacementAnonymousUser() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        var paths: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            paths.append(path)
+            if path.hasSuffix("/auth/v1/token") {
+                return (400, Data(#"{ "error": "invalid_grant", "error_description": "Invalid Refresh Token" }"#.utf8), [:])
+            }
+            return (200, Data("""
+            {
+              "access_token": "replacement-jwt",
+              "refresh_token": "replacement-refresh",
+              "expires_in": 3600,
+              "user": { "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }
+            }
+            """.utf8), [:])
+        }
+        let store = MemoryAuthTokenStore()
+        store.token = "existing-refresh"
+        let auth = makeAuthService(session: URLSession(configuration: configuration), store: store)
+
+        let user = try await auth.authenticatedUser()
+
+        XCTAssertEqual(user.id, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        XCTAssertEqual(store.token, "replacement-refresh")
+        XCTAssertEqual(paths, ["/auth/v1/token", "/auth/v1/signup"])
+    }
+
+    private func assertRefreshPreservesIdentity(status: Int, json: String) async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        MockURLProtocol.handler = { _ in (status, Data(json.utf8), [:]) }
+        let store = MemoryAuthTokenStore()
+        store.token = "existing-refresh"
+        let auth = makeAuthService(session: URLSession(configuration: configuration), store: store)
+
+        do {
+            _ = try await auth.authenticatedUser()
+            XCTFail("Refresh failure must fail closed")
+        } catch AuthenticationError.unavailable {
+            XCTAssertEqual(store.token, "existing-refresh")
+        } catch {
+            XCTFail("Unexpected \(error)")
+        }
+    }
+
+    private func makeAuthService(
+        session: URLSession,
+        store: MemoryAuthTokenStore
+    ) -> SupabaseAuthService {
+        SupabaseAuthService(
+            config: APIConfig(
+                baseURL: URL(string: "https://unit-test.invalid")!,
+                publishableKey: "sb_publishable_test"
+            ),
+            session: session,
+            tokenStore: store
+        )
     }
 
     // MARK: Success decoding
@@ -106,6 +228,17 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(status.tier, .free)
     }
 
+    func testAuthenticatedSubscriberUsageDecode() async throws {
+        stub(status: 200, json: """
+        { "subscribed": true, "remaining": 149, "limit": 150, "refinements_remaining": 2 }
+        """)
+        let status: UsageStatus = try await client.send(.usage)
+
+        XCTAssertEqual(status.tier, .plus)
+        XCTAssertEqual(status.remaining, 149)
+        XCTAssertEqual(status.limit, 150)
+    }
+
     // MARK: Header contract
 
     func testRequestCarriesRequiredHeaders() async throws {
@@ -120,9 +253,10 @@ final class APIClientTests: XCTestCase {
 
         XCTAssertEqual(captured?.value(forHTTPHeaderField: "apikey"), "sb_publishable_test")
         XCTAssertEqual(
-            captured?.value(forHTTPHeaderField: "X-Installation-ID"),
-            Self.testInstallationID
+            captured?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer test-user-jwt"
         )
+        XCTAssertNil(captured?.value(forHTTPHeaderField: "X-Installation-ID"))
     }
 
     // MARK: Error mapping
@@ -151,11 +285,25 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    func testQuotaExceededMappingCarriesUsage() async throws {
+    func testSubscriptionRequiredMapping() async throws {
         stub(status: 402, json: """
         {
-          "error": { "code": "QUOTA_EXCEEDED", "message": "No analyses remaining." },
-          "usage": { "remaining": 0, "limit": 5, "tier": "free", "refinements_remaining": 0 }
+          "error": { "code": "SUBSCRIPTION_REQUIRED", "message": "Subscription required." }
+        }
+        """)
+        do {
+            let _: UsageStatus = try await client.send(.usage)
+            XCTFail("Expected subscriptionRequired")
+        } catch APIError.subscriptionRequired {
+            // expected
+        }
+    }
+
+    func testUsageLimitExceededMappingCarriesUsage() async throws {
+        stub(status: 429, json: """
+        {
+          "error": { "code": "USAGE_LIMIT_EXCEEDED", "message": "Monthly allowance reached." },
+          "usage": { "remaining": 0, "limit": 150, "tier": "plus", "refinements_remaining": 0 }
         }
         """)
         do {
@@ -163,7 +311,7 @@ final class APIClientTests: XCTestCase {
             XCTFail("Expected quotaExceeded")
         } catch APIError.quotaExceeded(let usage) {
             XCTAssertEqual(usage?.remaining, 0)
-            XCTAssertEqual(usage?.limit, 5)
+            XCTAssertEqual(usage?.limit, 150)
         }
     }
 
@@ -216,4 +364,11 @@ final class APIClientTests: XCTestCase {
             // expected
         }
     }
+}
+
+private final class MemoryAuthTokenStore: AuthTokenStore {
+    var token: String?
+    func load() -> String? { token }
+    func save(_ token: String) { self.token = token }
+    func clear() { token = nil }
 }

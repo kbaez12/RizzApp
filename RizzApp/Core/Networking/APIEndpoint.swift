@@ -39,4 +39,16 @@ struct APIEndpoint {
     static var usage: APIEndpoint {
         APIEndpoint(path: "functions/v1/usage", method: .get, body: nil, timeout: 15)
     }
+
+    /// Reconciles RevenueCat with the authenticated backend account. The
+    /// server derives identity from the bearer token; no customer or
+    /// entitlement claims are accepted from this request body.
+    static var subscriptionSync: APIEndpoint {
+        APIEndpoint(
+            path: "functions/v1/subscription-sync",
+            method: .post,
+            body: Data("{}".utf8),
+            timeout: 30
+        )
+    }
 }

@@ -1,29 +1,27 @@
 import Foundation
 import Observation
 
-/// In-memory quota tracker for Phase 2. All quota arithmetic lives here —
-/// never in views. NOT production enforcement; the backend becomes the
-/// authoritative source in Phase 6.
+/// In-memory subscriber allowance tracker for previews and tests. Production
+/// enforcement always lives on the authenticated backend.
 @Observable
 final class MockUsageStore: UsageServicing {
     struct Config {
-        var freeLifetimeLimit = 5
-        /// Configurable server-side later; approximate initial Plus allowance.
-        var plusMonthlyAllowance = 150
-        var freeRefinementsPerAnalysis = 2
+        var monthlyAllowance = 150
+        var includedRefinementsPerAnalysis = 2
     }
 
     private let config: Config
-    private(set) var tier: UsageStatus.Tier = .free
+    private(set) var tier: UsageStatus.Tier
     private var analysesUsed = 0
     private var refinementsUsedThisAnalysis = 0
 
-    init(config: Config = Config()) {
+    init(config: Config = Config(), isSubscribed: Bool = true) {
         self.config = config
+        tier = isSubscribed ? .plus : .free
     }
 
     private var limit: Int {
-        tier == .plus ? config.plusMonthlyAllowance : config.freeLifetimeLimit
+        tier == .plus ? config.monthlyAllowance : 0
     }
 
     var status: UsageStatus {
@@ -31,7 +29,9 @@ final class MockUsageStore: UsageServicing {
             remaining: max(0, limit - analysesUsed),
             limit: limit,
             tier: tier,
-            refinementsRemaining: max(0, config.freeRefinementsPerAnalysis - refinementsUsedThisAnalysis)
+            refinementsRemaining: tier == .plus
+                ? max(0, config.includedRefinementsPerAnalysis - refinementsUsedThisAnalysis)
+                : 0
         )
     }
 
@@ -45,20 +45,22 @@ final class MockUsageStore: UsageServicing {
     }
 
     func canRefine() -> Bool {
-        refinementsUsedThisAnalysis < config.freeRefinementsPerAnalysis || canStartFullGeneration()
+        tier == .plus &&
+            (refinementsUsedThisAnalysis < config.includedRefinementsPerAnalysis ||
+             canStartFullGeneration())
     }
 
     func consumeRefinement() {
-        if refinementsUsedThisAnalysis < config.freeRefinementsPerAnalysis {
+        if refinementsUsedThisAnalysis < config.includedRefinementsPerAnalysis {
             refinementsUsedThisAnalysis += 1
         } else {
-            // Free refinement budget exhausted — this costs a full generation
-            // and starts a fresh refinement budget for the new result set.
+            // Included refinements exhausted: consume one full analysis and
+            // start a fresh refinement budget for the new result set.
             consumeFullGeneration()
         }
     }
 
-    /// Test/dev helper — flips to Plus. Real entitlement arrives in Phase 7.
+    /// Test helper for an initially unsubscribed store.
     func upgradeToPlus() {
         tier = .plus
     }

@@ -19,11 +19,9 @@ struct SettingsView: View {
     private var subscription: SubscriptionStatus { services.subscription.status }
 
     private var statusValue: String {
-        guard subscription.isPremium else {
-            let usage = services.usage.status
-            return "Free · \(usage.remaining) of \(usage.limit) left"
-        }
-        return subscription.planName.map { "Plus · \($0)" } ?? "Plus"
+        let usage = services.usage.status
+        let plan = subscription.planName.map { "\($0) · " } ?? ""
+        return "\(plan)\(usage.remaining) of \(usage.limit) remaining"
     }
 
     /// Renewal/expiration detail, only when we actually know it.
@@ -45,15 +43,9 @@ struct SettingsView: View {
                             .font(Typography.caption)
                             .foregroundStyle(Theme.textSecondary)
                     }
-                    if subscription.isPremium {
-                        button(icon: "arrow.up.right.square", title: "Manage Subscription") {
-                            if let url = services.subscription.manageSubscriptionsURL {
-                                openURL(url)
-                            }
-                        }
-                    } else {
-                        button(icon: "arrow.up.circle", title: "Upgrade to Plus") {
-                            flow.isShowingPaywall = true
+                    button(icon: "arrow.up.right.square", title: "Manage Subscription") {
+                        if let url = services.subscription.manageSubscriptionsURL {
+                            openURL(url)
                         }
                     }
                     button(icon: "arrow.clockwise", title: "Restore Purchases") {

@@ -25,7 +25,7 @@ final class AnalyzeViewModel {
         case nextMove(String)
         case followUp
         case error(String)
-        case upgrade
+        case allowanceReached
     }
 
     private(set) var messages: [Message] = []
@@ -43,17 +43,20 @@ final class AnalyzeViewModel {
     private let usage: any UsageServicing
     private let consent: PrivacyConsentStore
     private let onQuotaExhausted: () -> Void
+    private let onSubscriptionRequired: () -> Void
 
     init(
         analysis: any AnalysisServicing,
         usage: any UsageServicing,
         consent: PrivacyConsentStore,
-        onQuotaExhausted: @escaping () -> Void
+        onQuotaExhausted: @escaping () -> Void,
+        onSubscriptionRequired: @escaping () -> Void = {}
     ) {
         self.analysis = analysis
         self.usage = usage
         self.consent = consent
         self.onQuotaExhausted = onQuotaExhausted
+        self.onSubscriptionRequired = onSubscriptionRequired
     }
 
     func start(with input: ConversationInput) {
@@ -108,7 +111,7 @@ final class AnalyzeViewModel {
     private func run(isRetry: Bool) async {
         guard let input, !isBusy else { return }
         guard usage.canStartFullGeneration() else {
-            showUpgrade()
+            showAllowanceReached()
             return
         }
         if !isRetry {
@@ -136,8 +139,10 @@ final class AnalyzeViewModel {
             removeTyping()
             isBusy = false
             switch error {
+            case APIError.subscriptionRequired, APIError.unauthorized:
+                onSubscriptionRequired()
             case APIError.quotaExceeded:
-                showUpgrade()
+                showAllowanceReached()
             case APIError.duplicateRequest:
                 requestID = UUID()
                 append(.error(ChatViewModel.duplicateMessage))
@@ -151,9 +156,9 @@ final class AnalyzeViewModel {
         }
     }
 
-    private func showUpgrade() {
-        if messages.last?.kind != .upgrade {
-            append(.upgrade)
+    private func showAllowanceReached() {
+        if messages.last?.kind != .allowanceReached {
+            append(.allowanceReached)
         }
         onQuotaExhausted()
     }

@@ -188,15 +188,15 @@ struct ChatView: View {
                 }
                 .buttonStyle(.pill)
             }
-        case .upgrade:
+        case .allowanceReached:
             OptionsBubble(
-                title: "You've used your free replies. Plus gives you 150 a month.",
+                title: "You've reached this month's subscriber allowance.",
                 isActive: true
             ) {
                 Button {
-                    flow.isShowingPaywall = true
+                    flow.isShowingAllowanceReached = true
                 } label: {
-                    Label("See Plus", systemImage: "sparkles")
+                    Label("View Details", systemImage: "info.circle")
                 }
                 .buttonStyle(.pill)
             }

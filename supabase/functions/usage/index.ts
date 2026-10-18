@@ -1,16 +1,12 @@
-// GET /functions/v1/usage — Phase 4B: authoritative Postgres-backed usage.
-//
-// Publishable-key authentication via @supabase/server. Creates the
-// installation row on first contact (concurrency-safe upsert in the RPC).
-// No conversation content is involved anywhere in this endpoint.
+// GET /functions/v1/usage — authenticated subscription and quota status.
 
 import { withSupabase } from "npm:@supabase/server@1";
 import { errorJson, json } from "../_shared/responses.ts";
 import { handleOptions } from "../_shared/cors.ts";
-import { isValidInstallationId } from "../_shared/contracts.ts";
+import { authenticatedUserId } from "../_shared/auth.ts";
 
 export default {
-  fetch: withSupabase({ auth: "publishable" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
     if (req.method === "OPTIONS") {
       return handleOptions(req);
     }
@@ -18,19 +14,11 @@ export default {
       return errorJson(405, "METHOD_NOT_ALLOWED", "Use GET.", {}, req);
     }
 
-    const installationId = req.headers.get("x-installation-id");
-    if (!isValidInstallationId(installationId)) {
-      return errorJson(
-        400,
-        "INVALID_INSTALLATION",
-        "Missing or invalid installation identifier.",
-        {},
-        req,
-      );
-    }
-
-    const { data: usage, error } = await ctx.supabaseAdmin.rpc("get_usage", {
-      p_installation_id: installationId,
+    const userId = authenticatedUserId(ctx.userClaims);
+    // deno-lint-ignore no-explicit-any
+    const admin = ctx.supabaseAdmin as any;
+    const { data: usage, error } = await admin.rpc("get_user_usage", {
+      p_user_id: userId,
     });
     if (error || !usage) {
       console.log(JSON.stringify({ fn: "usage", status: 500, category: "rpc_failed" }));

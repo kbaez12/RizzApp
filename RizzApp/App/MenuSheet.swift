@@ -4,7 +4,6 @@ import SwiftUI
 /// actions; nothing here nags.
 struct MenuSheet: View {
     @Environment(AppFlowModel.self) private var flow
-    @Environment(\.services) private var services
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -18,10 +17,6 @@ struct MenuSheet: View {
             VStack(spacing: 0) {
                 row("Email Us", systemImage: "envelope") { openURL(LegalLinks.support) }
                 Divider().padding(.leading, 52)
-                if !services.subscription.status.isPremium {
-                    row("Upgrade to Plus", systemImage: "sparkles") { flow.choose(.upgrade) }
-                    Divider().padding(.leading, 52)
-                }
                 row("Settings", systemImage: "gearshape") { flow.choose(.settings) }
             }
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.card))

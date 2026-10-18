@@ -5,14 +5,19 @@ import SwiftUI
 /// here. No timers, no fake discounts, no pressure.
 struct PaywallView: View {
     @Environment(\.services) private var services
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+
+    let onVerified: () async -> Void
 
     @State private var plans: [SubscriptionPlan] = []
     @State private var selectedPlanID: String?
     @State private var isLoading = true
     @State private var isPurchasing = false
     @State private var errorMessage: String?
+
+    init(onVerified: @escaping () async -> Void = {}) {
+        self.onVerified = onVerified
+    }
 
     var body: some View {
         ZStack {
@@ -58,6 +63,11 @@ struct PaywallView: View {
                     .disabled(selectedPlanID == nil || isPurchasing)
                     .opacity(selectedPlanID == nil ? 0.4 : 1)
 
+                    Text("Payment is charged to your Apple ID. The subscription renews automatically unless canceled at least 24 hours before the current period ends. Manage or cancel it in your App Store account.")
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center)
+
                     footerLinks
                 }
             }
@@ -69,30 +79,20 @@ struct PaywallView: View {
             guard plans.isEmpty else { return }
             await loadPlans()
         }
-        .overlay(alignment: .topTrailing) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Close")
-        }
+        .interactiveDismissDisabled()
     }
 
     // MARK: - Sections
 
     private var header: some View {
         VStack(spacing: Spacing.md) {
-            Text("Greenshot Plus")
+            Text("Subscribe to Greenshot")
                 .font(Typography.title)
                 .foregroundStyle(Theme.textPrimary)
 
             VStack(alignment: .leading, spacing: Spacing.sm) {
-                benefit("150 conversation analyses a month")
-                benefit("Every goal and every refinement")
+                benefit("Up to 150 conversation analyses each month")
+                benefit("Two follow-up refinements included per analysis")
                 benefit("Cancel anytime")
             }
         }
@@ -161,12 +161,22 @@ struct PaywallView: View {
     }
 
     private var footerLinks: some View {
-        HStack(spacing: Spacing.lg) {
-            Button("Restore") {
-                Task { await restore() }
+        VStack(spacing: Spacing.sm) {
+            HStack(spacing: Spacing.lg) {
+                Button("Restore Purchases") {
+                    Task { await restore() }
+                }
+                Button("Manage") {
+                    if let url = services.subscription.manageSubscriptionsURL {
+                        openURL(url)
+                    }
+                }
+                Button("Support") { openURL(LegalLinks.support) }
             }
-            Button("Terms") { openURL(LegalLinks.terms) }
-            Button("Privacy") { openURL(LegalLinks.privacy) }
+            HStack(spacing: Spacing.lg) {
+                Button("Terms") { openURL(LegalLinks.terms) }
+                Button("Privacy") { openURL(LegalLinks.privacy) }
+            }
         }
         .font(Typography.caption)
         .foregroundStyle(Theme.textSecondary)
@@ -196,7 +206,7 @@ struct PaywallView: View {
         do {
             let purchased = try await services.subscription.purchase(plan)
             if purchased {
-                dismiss()
+                await onVerified()
             }
             // User cancelled: no message, no nagging.
         } catch {
@@ -211,7 +221,7 @@ struct PaywallView: View {
         do {
             let restored = try await services.subscription.restorePurchases()
             if restored {
-                dismiss()
+                await onVerified()
             } else {
                 errorMessage = "No previous subscription found on this Apple ID."
             }

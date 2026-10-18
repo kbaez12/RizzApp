@@ -6,8 +6,9 @@ enum APIError: Error {
     case offline
     case timeout
     case unauthorized
-    /// Server refused because quota is exhausted (HTTP 402). Carries the
-    /// server's usage snapshot when the error body included one.
+    /// No active backend-verified subscription.
+    case subscriptionRequired
+    /// An active subscriber reached the monthly allowance.
     case quotaExceeded(UsageStatus?)
     /// The idempotency key already reached the backend. Results are not
     /// persisted for privacy, so the user must start a fresh logical request.

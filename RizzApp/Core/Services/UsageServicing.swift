@@ -8,17 +8,17 @@ import Foundation
 protocol UsageServicing: AnyObject {
     var status: UsageStatus { get }
 
-    /// Whether a full analysis can start (free lifetime or Plus monthly allowance).
+    /// Whether a subscriber has monthly allowance for a full analysis.
     func canStartFullGeneration() -> Bool
 
     /// Charges one full analysis and resets the refinement budget.
     func consumeFullGeneration()
 
-    /// Whether a refinement can run: a free refinement remains on the current
+    /// Whether a refinement can run: an included refinement remains on the current
     /// analysis, or a full generation can be consumed instead.
     func canRefine() -> Bool
 
-    /// Charges a refinement: uses the free budget first (2 per analysis),
+    /// Charges a refinement: uses the included budget first (2 per analysis),
     /// then falls back to consuming a full generation.
     func consumeRefinement()
 

@@ -6,8 +6,8 @@ import Foundation
 ///
 /// Headers sent on every request:
 /// - `apikey`: the Supabase publishable key (client-safe project credential;
-///   sent per Supabase's publishable-key pattern, NOT as a bearer token).
-/// - `X-Installation-ID`: anonymous installation identifier (not device auth).
+///   sent per Supabase's publishable-key pattern).
+/// - `Authorization`: a short-lived Supabase anonymous-user JWT.
 /// Conversation content only ever travels in request bodies, never headers,
 /// and is never logged by this client.
 final class APIClient {
@@ -25,17 +25,21 @@ final class APIClient {
     }()
 
     private let config: APIConfig
-    private let installationID: String
+    private let accessToken: () async throws -> String
     private let session: URLSession
 
-    init(config: APIConfig, installationID: String, session: URLSession = .shared) {
+    init(
+        config: APIConfig,
+        session: URLSession = .shared,
+        accessToken: @escaping () async throws -> String
+    ) {
         self.config = config
-        self.installationID = installationID
         self.session = session
+        self.accessToken = accessToken
     }
 
     func send<Response: Decodable>(_ endpoint: APIEndpoint) async throws -> Response {
-        let request = buildRequest(for: endpoint)
+        let request = try await buildRequest(for: endpoint)
 
         let data: Data
         let response: URLResponse
@@ -70,7 +74,7 @@ final class APIClient {
         case 401, 403:
             throw APIError.unauthorized
         case 402:
-            throw APIError.quotaExceeded(backendPayload(from: data)?.usage)
+            throw APIError.subscriptionRequired
         case 409:
             let payload = backendPayload(from: data)
             guard payload?.error.code == "DUPLICATE_REQUEST" else {
@@ -78,6 +82,10 @@ final class APIClient {
             }
             throw APIError.duplicateRequest(payload?.usage)
         case 429:
+            let payload = backendPayload(from: data)
+            if payload?.error.code == "USAGE_LIMIT_EXCEEDED" {
+                throw APIError.quotaExceeded(payload?.usage)
+            }
             let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(TimeInterval.init)
             throw APIError.rateLimited(retryAfter: retryAfter)
@@ -88,12 +96,12 @@ final class APIClient {
         }
     }
 
-    private func buildRequest(for endpoint: APIEndpoint) -> URLRequest {
+    private func buildRequest(for endpoint: APIEndpoint) async throws -> URLRequest {
         var request = URLRequest(url: config.baseURL.appendingPathComponent(endpoint.path))
         request.httpMethod = endpoint.method.rawValue
         request.timeoutInterval = endpoint.timeout
         request.setValue(config.publishableKey, forHTTPHeaderField: "apikey")
-        request.setValue(installationID, forHTTPHeaderField: "X-Installation-ID")
+        request.setValue("Bearer \(try await accessToken())", forHTTPHeaderField: "Authorization")
         if let body = endpoint.body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

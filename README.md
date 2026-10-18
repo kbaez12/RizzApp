@@ -2,9 +2,11 @@
 
 A simple iOS app: upload a screenshot or paste a conversation, pick a
 goal, get three AI replies (Natural / Bolder / Make a Move), copy one.
-Five free analyses, then a Plus subscription.
+An active subscription is required; subscribers receive a monthly
+generation allowance enforced by the backend.
 
-No accounts. No profiles. No conversation history.
+No visible account or profile UI. A background Supabase anonymous account
+securely binds backend requests and subscription state. No conversation history.
 
 - Minimum iOS: 17.0
 - SwiftUI, `@Observable`, `NavigationStack`, PhotosPicker
@@ -30,6 +32,10 @@ For a hosted development project, also set
 
 Views never know which mode is running. Mock mode keeps
 `MockGenerationService` / `MockUsageStore` / `MockSubscriptionService`.
+Release builds never fall back to mocks. Provide the public
+`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and
+`REVENUECAT_PUBLIC_SDK_KEY` build settings; a missing or placeholder value
+shows a blocking configuration screen.
 
 ## Building (macOS required)
 

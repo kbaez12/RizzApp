@@ -13,15 +13,15 @@ submission. App Review rejects unreachable privacy/terms URLs.
 
 | Item | Current placeholder | Where it goes |
 | --- | --- | --- |
-| Final **app name** | RizzApp (working title) | Xcode display name, App Store Connect, RevenueCat |
-| **Bundle ID** | `com.placeholder.rizzapp` | `project.yml`, Apple Developer, App Store Connect, RevenueCat, RevenueCat products |
+| Final **app name** | Greenshot | Xcode display name, App Store Connect, RevenueCat |
+| **Bundle ID** | `com.zenomedia.greenshot` | `project.yml`, Apple Developer, App Store Connect, RevenueCat |
 | **App icon** | none | 1024×1024 PNG, no alpha, plus the Xcode asset catalog |
 | **Privacy Policy URL** | `https://rizzapp.example.com/privacy` | `LegalLinks.swift`, App Store Connect, paywall |
 | **Terms of Use URL** | `https://rizzapp.example.com/terms` | `LegalLinks.swift`, paywall |
 | **Support URL or email** | `mailto:support@rizzapp.example.com` | `LegalLinks.swift`, App Store Connect |
 | Apple Developer **Team ID** | — | Xcode signing |
 | OpenAI **API key** | — | Supabase secret `OPENAI_API_KEY` |
-| RevenueCat **public SDK key** | `appl_PASTE_…` | `APIConfig.swift` |
+| RevenueCat **public SDK key** | — | Release build setting `REVENUECAT_PUBLIC_SDK_KEY` |
 | RevenueCat **webhook Authorization value** | — | Supabase secret `REVENUECAT_WEBHOOK_SECRET` |
 
 ---
@@ -37,9 +37,8 @@ open RizzApp.xcodeproj
 
 Then in Xcode:
 
-1. Signing & Capabilities → your Team. Change the bundle ID from
-   `com.placeholder.rizzapp` in `project.yml` and regenerate, or edit it
-   in the target.
+1. Signing & Capabilities → your Team. Confirm the App Store Connect app
+   uses the existing `com.zenomedia.greenshot` bundle ID exactly.
 2. Add an App Icon to `Assets.xcassets` (create the catalog if XcodeGen
    did not). 1024×1024, no transparency.
 3. Confirm `MARKETING_VERSION` (`0.1.0`) and `CURRENT_PROJECT_VERSION`
@@ -50,7 +49,7 @@ Then in Xcode:
 5. ⌘U — run the unit tests.
 6. SPM should resolve RevenueCat automatically from `project.yml`.
    If it does not: File → Add Package Dependencies →
-   `https://github.com/RevenueCat/purchases-ios` (5.x) → product
+   `https://github.com/RevenueCat/purchases-ios` (5.88.0 or newer) → product
    `RevenueCat`.
 
 **ATS:** production traffic is HTTPS. Local `http://127.0.0.1` is
@@ -92,8 +91,16 @@ supabase secrets set OPENAI_MODEL=gpt-5.6-luna
 supabase secrets set OPENAI_MAX_OUTPUT_TOKENS=500
 supabase secrets set OPENAI_REASONING_EFFORT=low
 supabase secrets set REVENUECAT_WEBHOOK_SECRET=a-long-random-string
+supabase secrets set REVENUECAT_API_KEY=sk-...
+supabase secrets set REVENUECAT_APP_ID=app_...
+supabase secrets set REVENUECAT_ENTITLEMENT_ID=plus
+supabase secrets set REVENUECAT_PRODUCT_IDS=<monthly-id>,<yearly-id>
+supabase secrets set REVENUECAT_EXPECTED_ENVIRONMENT=PRODUCTION
+supabase secrets set REVENUECAT_EXPECTED_STORE=APP_STORE
 supabase functions deploy generate
+supabase functions deploy analyze
 supabase functions deploy usage
+supabase functions deploy subscription-sync
 supabase functions deploy revenuecat-webhook
 ```
 
@@ -111,6 +118,19 @@ https://YOUR-PROJECT-REF.supabase.co/functions/v1/revenuecat-webhook
 ```
 
 Authorization header value = the `REVENUECAT_WEBHOOK_SECRET` you set.
+
+Hosted Auth and RevenueCat Customer Authentication (confirm in dashboards
+before any live Release; this repo cannot enable them):
+
+- Authentication → Providers → **Anonymous sign-ins: ON**
+- CAPTCHA / Turnstile: **off** for this native client (the app sends `{}`
+  and cannot supply a captcha token)
+- JWT signing: **asymmetric** ECC/RSA keys, not HS256
+- Publishable API key prefix: `sb_publishable_`
+- RevenueCat project **Customer Authentication private beta** enabled
+- RevenueCat Auth method: OIDC issuer
+  `https://YOUR-PROJECT-REF.supabase.co/auth/v1`, Client ID `authenticated`
+- RevenueCat public SDK key prefix: `appl_`
 
 ---
 
@@ -147,9 +167,9 @@ Iterate on `supabase/functions/_shared/prompt.ts` if replies are weak.
 2. Agreements, Tax, and Banking must be complete or subscriptions
    will not work, even in sandbox.
 3. Features → Subscriptions:
-   - Subscription Group: e.g. `plus`
-   - Product `plus_monthly` — $6.99 / 1 month
-   - Product `plus_yearly` — $49.99 / 1 year
+   - Create the final subscription group.
+   - Create owner-approved monthly and yearly products; choose the final
+     identifiers and prices in App Store Connect.
 4. Localization for each product (display name + description).
 5. Submit the subscription group for review with the first build
    (or as a standalone subscription review, depending on current
@@ -160,20 +180,29 @@ Iterate on `supabase/functions/_shared/prompt.ts` if replies are weak.
 1. Create a project, iOS app, bundle ID matching ours.
 2. Upload the In-App Purchase Key (p8) from App Store Connect → Users
    and Access → Integrations → In-App Purchase.
-3. Products: import `plus_monthly` and `plus_yearly`.
+3. Products: import the exact monthly and yearly products created above.
 4. Entitlement: `plus` — attach both products.
-5. Offering: `default`
-   - Package `$rc_monthly` → `plus_monthly`
-   - Package `$rc_annual` → `plus_yearly`
-6. Public SDK key (`appl_…`) → `APIConfig.revenueCatPublicKey`.
+5. Add both products to the current offering using their matching duration
+   package types.
+6. Public SDK key (`appl_…`) → Release build setting
+   `REVENUECAT_PUBLIC_SDK_KEY`.
 7. Webhooks → the Supabase URL above. Authorization header = the
-   secret. The app user ID is our installation UUID, which is how
-   the webhook maps to the quota row. **Do not** enable anonymous
-   aliases that would replace that ID.
-8. Sandbox testers: App Store Connect → Users and Access → Sandbox.
+   secret. The RevenueCat App User ID is the authenticated Supabase
+   anonymous user UUID. The backend independently derives this identity
+   from the bearer token during subscription sync.
+8. Configure RevenueCat customer authentication against Supabase OIDC
+   (`https://YOUR-PROJECT-REF.supabase.co/auth/v1`, audience
+   `authenticated`) after enabling asymmetric Supabase JWT signing.
+   Customer Authentication is currently a RevenueCat private beta; obtain
+   production access from RevenueCat before submitting this build.
+9. Choose and test RevenueCat's transfer behavior so an explicit Apple
+   restore moves access to the new anonymous user without creating a new
+   usage allowance.
+10. Sandbox testers: App Store Connect → Users and Access → Sandbox.
 
 The client never tells the backend it is premium. Only the webhook
-changes `installations.tier`.
+and authenticated server-to-server subscription reconciliation update
+entitlement state.
 
 ---
 
@@ -218,9 +247,11 @@ no social graph.
 > This app helps a user draft a reply to a conversation they already
 > have. They select one screenshot or paste text; that content is sent
 > to our backend and then to OpenAI to generate three reply options.
-> We do not create accounts. We do not store conversations. Free users
-> get 5 analyses; Plus is an auto-renewing subscription (monthly /
-> yearly) via StoreKit. Restore Purchases is on the paywall and in
+> We create a background anonymous account only to authenticate requests
+> and bind subscription access. We do not store conversations. An
+> auto-renewing subscription is required (monthly / yearly) via StoreKit,
+> with a disclosed monthly generation allowance. Restore Purchases is on
+> the paywall and in
 > Settings. Sandbox: use the attached sandbox Apple ID.
 
 ### Screenshots
@@ -262,7 +293,8 @@ No device frames required; Apple prefers raw screenshots.
 - [ ] Restore Purchases works
 - [ ] Webhook received `INITIAL_PURCHASE` and the installation row
       flipped to `plus` (check in Supabase Table Editor)
-- [ ] Free quota: 5 → paywall
+- [ ] New/inactive account remains on the non-dismissible paywall
+- [ ] Active subscriber reaches the monthly cap without losing subscription status
 - [ ] Privacy disclosure appears once, then not again
 - [ ] Start Over clears the conversation and does not reset quota
 - [ ] Offline generation shows a friendly error
@@ -286,7 +318,7 @@ No device frames required; Apple prefers raw screenshots.
 **Shipped for MVP / TestFlight**
 
 - OpenAI key, Supabase service-role, RevenueCat secret: server only
-- Publishable-key validation (`@supabase/server` `auth: "publishable"`)
+- Supabase anonymous-user JWT validation on protected functions
 - Atomic Postgres quota + idempotency + refund-on-failure
 - Request validation and size limits
 - Per-installation rate limit (12 requests / 60s)

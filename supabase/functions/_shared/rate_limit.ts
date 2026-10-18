@@ -1,6 +1,5 @@
-// Per-installation rate limiting. Fail-open by design: a limiter outage
-// must not take generation down, since quota enforcement is the real
-// spending cap.
+// Per-authenticated-user rate limiting. Fail closed: an infrastructure
+// outage must not remove spending protection from expensive AI endpoints.
 
 export interface RateLimitDecision {
   allowed: boolean;
@@ -10,13 +9,13 @@ export interface RateLimitDecision {
 // deno-lint-ignore no-explicit-any
 export async function enforceRateLimit(
   admin: any,
-  installationId: string,
+  userId: string,
 ): Promise<RateLimitDecision> {
   const { data, error } = await admin.rpc("check_rate_limit", {
-    p_installation_id: installationId,
+    p_installation_id: userId,
   });
   if (error || !data) {
-    return { allowed: true, retryAfterSeconds: 0 };
+    return { allowed: false, retryAfterSeconds: 30 };
   }
   return {
     allowed: data.allowed !== false,

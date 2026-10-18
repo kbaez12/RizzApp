@@ -14,7 +14,10 @@
 
 import { assertEquals } from "jsr:@std/assert";
 
-const RUN = Deno.env.get("INTEGRATION") === "true";
+// Legacy installation/free-tier suite. The mandatory-subscription backend is
+// covered by subscription_integration_test.ts. Keep this opt-in only for
+// rollback verification against pre-migration deployments.
+const RUN = Deno.env.get("LEGACY_INSTALLATION_INTEGRATION") === "true";
 const BASE = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
 const KEY = Deno.env.get("PUBLISHABLE_KEY") ?? "";
 

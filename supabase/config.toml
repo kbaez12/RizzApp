@@ -2,10 +2,14 @@
 # machine with the CLI will expand this; keep the [functions.*] sections.
 project_id = "rizzapp"
 
-# Our clients send the publishable key via the `apikey` header and have no
-# user JWTs (no accounts by design), so per-function JWT verification is off.
-# The functions themselves validate the apikey header, installation ID, and
-# request shape. App Attest + rate limiting arrive in Phase 8.
+# Required for POST /auth/v1/signup with an empty JSON body (anonymous
+# sign-in). Hosted projects must enable the same dashboard toggle.
+[auth]
+enable_anonymous_sign_ins = true
+
+# @supabase/server validates user JWTs inside app-facing functions. Gateway
+# verification stays off so that package can provide consistent JSON 401s and
+# CORS behavior. RevenueCat uses its own server-to-server credential.
 
 [functions.generate]
 verify_jwt = false
@@ -14,6 +18,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.analyze]
+verify_jwt = false
+
+[functions.subscription-sync]
 verify_jwt = false
 
 # Called by RevenueCat, not by our app: authenticated with a shared secret

@@ -17,3 +17,6 @@ supabase/.temp/
 supabase/.env
 supabase/functions/.env
 .env
+
+# GitHub Actions local/CI output
+.github/backend-validation/out/

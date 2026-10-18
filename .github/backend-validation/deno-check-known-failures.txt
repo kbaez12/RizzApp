@@ -1,0 +1,8 @@
+# Known pre-existing `deno check` failures for Greenshot's Supabase functions.
+# One normalized error per line. Blank lines and # comments are ignored.
+#
+# Normalized form produced by summarize.py:
+#   TS#### <relative/path.ts> <message>
+#
+# Add a line here only after confirming the error existed before a change
+# and is not a new regression. Do not put secrets in this file.

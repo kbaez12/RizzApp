@@ -1,9 +1,7 @@
 // POST /functions/v1/generate
 //
-// Publishable-key authentication via @supabase/server (withSupabase
-// validates the `apikey` header against the project's publishable key with
-// a timing-safe comparison; verify_jwt = false remains correct for this
-// no-user-JWT flow). Quota is enforced atomically in Postgres through a
+// Supabase user JWT authentication via @supabase/server. Quota is enforced
+// atomically in Postgres through a
 // reserve → generate → commit/release pipeline: an OpenAI failure refunds
 // the user's usage.
 //
@@ -28,6 +26,8 @@ import {
   CANNED_RESPONSES,
   CANNED_USAGE_EXHAUSTED,
 } from "../_shared/canned.ts";
+import { authenticatedUserId } from "../_shared/auth.ts";
+import { reservationDenial } from "../_shared/subscription.ts";
 
 // Development-only error simulation (requires DEV_ERROR_SIMULATION=true in
 // the function env — local .env only, never production). Note: these run
@@ -46,7 +46,7 @@ function simulatedResponse(scenario: string, req: Request): Response | null {
     case "unauthorized":
       return errorJson(401, "UNAUTHORIZED", "Simulated auth failure.", {}, req);
     case "quota":
-      return errorJson(402, "QUOTA_EXCEEDED", "No analyses remaining.", {
+      return errorJson(429, "USAGE_LIMIT_EXCEEDED", "Monthly usage limit reached.", {
         usage: CANNED_USAGE_EXHAUSTED,
       }, req);
     case "rate_limit":
@@ -76,10 +76,14 @@ function cannedResponses(body: GenerationRequestBody) {
 }
 
 export default {
-  fetch: withSupabase({ auth: "publishable" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
     const startedAt = Date.now();
     const requestLogId = crypto.randomUUID();
     const devSimulation = Deno.env.get("DEV_ERROR_SIMULATION") === "true";
+    // New additive RPCs are not present in @supabase/server's ungenerated
+    // Database type. Keep this cast scoped to the trusted service-role client.
+    // deno-lint-ignore no-explicit-any
+    const admin = ctx.supabaseAdmin as any;
 
     const log = (
       status: number,
@@ -115,12 +119,13 @@ export default {
       }
     }
 
-    const pre = await preflight(req, ctx.supabaseAdmin);
+    const userId = authenticatedUserId(ctx.userClaims);
+    const pre = await preflight(req, admin, userId);
     if (!pre.ok) {
       log(pre.response.status, pre.category);
       return pre.response;
     }
-    const { installationId, parsed } = pre;
+    const { parsed } = pre;
 
     const validation = validateGenerationRequest(parsed);
     if (!validation.ok) {
@@ -132,9 +137,9 @@ export default {
     const actionKind = classifyAction(body);
 
     // ---- RESERVE (atomic, in Postgres; idempotent per request_id) ----
-    const { data: reservation, error: reserveError } = await ctx.supabaseAdmin
-      .rpc("reserve_usage", {
-        p_installation_id: installationId,
+    const { data: reservation, error: reserveError } = await admin
+      .rpc("reserve_user_usage", {
+        p_user_id: userId,
         p_request_id: body.request_id,
         p_action_kind: actionKind,
       });
@@ -143,9 +148,10 @@ export default {
       return errorJson(500, "INTERNAL", "Could not process request.", {}, req);
     }
 
-    if (reservation.outcome === "quota_exceeded") {
-      log(402, "quota_exceeded", body.input?.kind);
-      return errorJson(402, "QUOTA_EXCEEDED", "No analyses remaining.", {
+    const denial = reservationDenial(reservation.outcome);
+    if (denial) {
+      log(denial.status, denial.category, body.input?.kind);
+      return errorJson(denial.status, denial.code, denial.message, {
         usage: reservation.usage,
       }, req);
     }
@@ -191,8 +197,8 @@ export default {
       const { responses, metrics } = guarded.value;
 
       // ---- COMMIT ----
-      const { data: commit, error: commitError } = await ctx.supabaseAdmin
-        .rpc("commit_reservation", {
+      const { data: commit, error: commitError } = await admin
+        .rpc("commit_user_reservation", {
           p_reservation_id: reservation.reservation_id,
         });
       if (commitError) {
@@ -207,7 +213,7 @@ export default {
       return json(200, { responses, usage: commit.usage }, req);
     } catch {
       // ---- RELEASE / REFUND: user never loses quota to a server failure.
-      await ctx.supabaseAdmin.rpc("release_reservation", {
+      await admin.rpc("release_user_reservation", {
         p_reservation_id: reservation.reservation_id,
       });
       log(500, "generation_failed_refunded", body.input?.kind);

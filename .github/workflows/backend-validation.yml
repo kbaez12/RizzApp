@@ -1,0 +1,125 @@
+# Greenshot / RizzApp — Supabase backend validation
+#
+# Runs local Deno unit tests and static checks in GitHub-hosted runners.
+# No Deno install is required on Windows.
+#
+# Security boundaries:
+# - contents:read only
+# - no repository secrets are passed into the job
+# - hosted integration flags stay unset
+# - no supabase functions deploy, db push, or live OpenAI calls
+name: Backend validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "candidate/**"
+      - greenshot-identity
+      - greenshot-testflight
+    paths:
+      - "supabase/functions/**"
+      - "supabase/migrations/**"
+      - ".github/workflows/backend-validation.yml"
+      - ".github/backend-validation/**"
+  pull_request:
+    branches:
+      - "candidate/**"
+      - greenshot-identity
+      - greenshot-testflight
+    paths:
+      - "supabase/functions/**"
+      - "supabase/migrations/**"
+      - ".github/workflows/backend-validation.yml"
+      - ".github/backend-validation/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supabase-unit:
+    name: Supabase unit tests and static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Refuse hosted/live suites even if an org-level variable exists.
+      INTEGRATION: ""
+      LEGACY_INSTALLATION_INTEGRATION: ""
+      SUBSCRIPTION_INTEGRATION: ""
+      OPENAI_API_KEY: ""
+      REVENUECAT_API_KEY: ""
+      REVENUECAT_WEBHOOK_SECRET: ""
+      SUPABASE_URL: ""
+      PUBLISHABLE_KEY: ""
+      USER_JWT: ""
+      USER_ID: ""
+      UNSUBSCRIBED_USER_JWT: ""
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        id: setup-deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+
+      - name: Show Deno version
+        run: deno --version
+
+      - name: Run backend unit tests
+        run: >
+          deno test
+          --config supabase/functions/deno.json
+          --allow-env
+          supabase/functions/_shared
+
+      - name: Prepare validation output directory
+        run: mkdir -p .github/backend-validation/out
+
+      - name: Check Deno formatting
+        continue-on-error: true
+        run: |
+          set +e
+          deno fmt --check supabase/functions \
+            > .github/backend-validation/out/deno-fmt.txt 2>&1
+          status=$?
+          echo "deno fmt --check exited ${status}"
+          cat .github/backend-validation/out/deno-fmt.txt
+          exit 0
+
+      - name: TypeScript check shared modules
+        continue-on-error: true
+        run: |
+          set +e
+          deno check --config supabase/functions/deno.json \
+            supabase/functions/_shared/*.ts \
+            > .github/backend-validation/out/deno-check-shared.txt 2>&1
+          echo "deno check shared exited $?"
+          cat .github/backend-validation/out/deno-check-shared.txt
+          exit 0
+
+      - name: TypeScript check Edge Function entrypoints
+        continue-on-error: true
+        run: |
+          set +e
+          deno check --config supabase/functions/deno.json \
+            supabase/functions/generate/index.ts \
+            supabase/functions/analyze/index.ts \
+            supabase/functions/usage/index.ts \
+            supabase/functions/subscription-sync/index.ts \
+            supabase/functions/revenuecat-webhook/index.ts \
+            > .github/backend-validation/out/deno-check-functions.txt 2>&1
+          echo "deno check functions exited $?"
+          cat .github/backend-validation/out/deno-check-functions.txt
+          exit 0
+
+      - name: Compare TypeScript errors and report skipped integration tests
+        run: python3 .github/backend-validation/summarize.py

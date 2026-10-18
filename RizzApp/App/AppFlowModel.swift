@@ -14,12 +14,11 @@ final class AppFlowModel {
     /// Actions chosen from the menu sheet, run after it finishes dismissing
     /// so two sheets never animate at once.
     enum MenuAction {
-        case upgrade
         case settings
     }
 
     var selectedTab: Tab = .chat
-    var isShowingPaywall = false
+    var isShowingAllowanceReached = false
     var isShowingMenu = false
     private var pendingMenuAction: MenuAction?
 
@@ -32,7 +31,6 @@ final class AppFlowModel {
         guard let action = pendingMenuAction else { return }
         pendingMenuAction = nil
         switch action {
-        case .upgrade: isShowingPaywall = true
         case .settings: selectedTab = .settings
         }
     }

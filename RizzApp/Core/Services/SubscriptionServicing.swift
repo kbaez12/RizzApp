@@ -36,6 +36,11 @@ protocol SubscriptionServicing: AnyObject {
     /// Refreshes entitlement state (launch, foreground, after purchase).
     func refresh() async
 
+    /// Requires both trusted RevenueCat entitlement data and backend
+    /// entitlement/usage confirmation. Throws rather than failing open.
+    @discardableResult
+    func verify() async throws -> SubscriptionStatus
+
     func offerings() async throws -> [SubscriptionPlan]
 
     /// Returns false if the user cancelled the purchase sheet.
@@ -56,6 +61,11 @@ extension SubscriptionServicing {
     var manageSubscriptionsURL: URL? {
         URL(string: "https://apps.apple.com/account/subscriptions")
     }
+
+    func verify() async throws -> SubscriptionStatus {
+        await refresh()
+        return status
+    }
 }
 
 enum SubscriptionError: Error {
@@ -66,6 +76,10 @@ enum SubscriptionError: Error {
     case offeringsUnavailable
     /// Purchase or restore failed for a store-side reason.
     case purchaseFailed
+    /// RevenueCat or backend could not confirm access.
+    case verificationUnavailable
+    /// Store entitlement exists but the backend has not confirmed it.
+    case backendNotEntitled
 
     /// Friendly, non-technical copy for the UI.
     var displayMessage: String {
@@ -76,6 +90,10 @@ enum SubscriptionError: Error {
             "Couldn't load plans. Check your connection and try again."
         case .purchaseFailed:
             "That didn't go through. No charge was made."
+        case .verificationUnavailable:
+            "We couldn't verify your subscription. Check your connection and try again."
+        case .backendNotEntitled:
+            "Your purchase is still being verified. Try again in a moment."
         }
     }
 }

@@ -5,6 +5,8 @@ import Foundation
 enum ServiceMode {
     case mock
     case liveDevelopment
+    case production
+    case configurationError
 }
 
 /// Central app configuration. Live development is deliberately opt-in:
@@ -21,8 +23,28 @@ enum AppConfig {
         }
         return .liveDevelopment
         #else
-        return .mock
+        return productionAPI == nil ? .configurationError : .production
         #endif
+    }
+
+    /// Public production values injected through Release build settings.
+    /// Missing or placeholder values are a blocking launch error.
+    static var productionAPI: APIConfig? {
+        guard let urlString = configurationValue("SUPABASE_URL"),
+              let key = configurationValue("SUPABASE_PUBLISHABLE_KEY"),
+              let revenueCatKey = configurationValue("REVENUECAT_PUBLIC_SDK_KEY"),
+              let url = URL(string: urlString),
+              url.scheme == "https",
+              url.host?.hasSuffix(".supabase.co") == true,
+              key.hasPrefix("sb_publishable_"),
+              revenueCatKey.hasPrefix("appl_") else {
+            return nil
+        }
+        return APIConfig(
+            baseURL: url,
+            publishableKey: key,
+            revenueCatPublicKey: revenueCatKey
+        )
     }
 
     /// Returns nil for missing, placeholder, non-development, or malformed
@@ -84,7 +106,7 @@ struct APIConfig {
     /// RevenueCat **public** SDK key (safe in the client). The RevenueCat
     /// secret key must never appear here — it belongs only in RevenueCat's
     /// dashboard/webhook configuration.
-    var revenueCatPublicKey: String = "appl_PASTE_REVENUECAT_PUBLIC_SDK_KEY"
+    var revenueCatPublicKey: String = ""
 
     /// Accepts only loopback Supabase or HTTPS hosted Supabase targets.
     /// Combined with AppConfig's explicit development marker, this prevents

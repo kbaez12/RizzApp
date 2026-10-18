@@ -109,15 +109,15 @@ final class RequestIdempotencyTests: XCTestCase {
     }
 
     func testQuotaExceededSnapshotUpdatesLiveUsage() async throws {
-        // 402 from the backend → LiveGenerationService pushes the usage
+        // 429 USAGE_LIMIT_EXCEEDED → LiveGenerationService pushes the usage
         // snapshot before rethrowing, keeping displayed quota authoritative.
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         MockURLProtocol.handler = { _ in
-            (402, Data("""
+            (429, Data("""
             {
-              "error": { "code": "QUOTA_EXCEEDED", "message": "No analyses remaining." },
-              "usage": { "remaining": 0, "limit": 5, "tier": "free", "refinements_remaining": 0 }
+              "error": { "code": "USAGE_LIMIT_EXCEEDED", "message": "Monthly allowance reached." },
+              "usage": { "remaining": 0, "limit": 150, "tier": "plus", "refinements_remaining": 0 }
             }
             """.utf8), [:])
         }
@@ -128,8 +128,8 @@ final class RequestIdempotencyTests: XCTestCase {
                 baseURL: URL(string: "https://unit-test.invalid")!,
                 publishableKey: "sb_publishable_test"
             ),
-            installationID: "11111111-2222-4333-8444-555555555555",
-            session: URLSession(configuration: configuration)
+            session: URLSession(configuration: configuration),
+            accessToken: { "test-user-jwt" }
         )
         var captured: UsageStatus?
         let service = LiveGenerationService(client: client) { captured = $0 }

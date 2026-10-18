@@ -1,36 +1,22 @@
-// Common request checks for app-facing POST endpoints (generate, analyze):
-// installation ID, per-installation rate limit, body size, JSON parsing.
+// Common request checks for authenticated app-facing POST endpoints:
+// per-user rate limit, body size, and JSON parsing.
 // Endpoint-specific validation happens after this.
 
-import { isValidInstallationId, MAX_BODY_BYTES } from "./contracts.ts";
+import { MAX_BODY_BYTES } from "./contracts.ts";
 import { enforceRateLimit } from "./rate_limit.ts";
 import { errorJson } from "./responses.ts";
 
 export type Preflight =
-  | { ok: true; installationId: string; parsed: unknown }
+  | { ok: true; userId: string; parsed: unknown }
   | { ok: false; response: Response; category: string };
 
 export async function preflight(
   req: Request,
   // deno-lint-ignore no-explicit-any
   admin: any,
+  userId: string,
 ): Promise<Preflight> {
-  const installationId = req.headers.get("x-installation-id");
-  if (!isValidInstallationId(installationId)) {
-    return {
-      ok: false,
-      category: "invalid_installation_id",
-      response: errorJson(
-        400,
-        "INVALID_INSTALLATION",
-        "Missing or invalid installation identifier.",
-        {},
-        req,
-      ),
-    };
-  }
-
-  const rate = await enforceRateLimit(admin, installationId!);
+  const rate = await enforceRateLimit(admin, userId);
   if (!rate.allowed) {
     return {
       ok: false,
@@ -41,8 +27,8 @@ export async function preflight(
     };
   }
 
-  const contentLength = Number(req.headers.get("content-length") ?? "0");
-  if (contentLength > MAX_BODY_BYTES) {
+  const declaredLength = Number(req.headers.get("content-length") ?? "0");
+  if (declaredLength > MAX_BODY_BYTES) {
     return {
       ok: false,
       category: "payload_too_large",
@@ -51,7 +37,25 @@ export async function preflight(
   }
 
   try {
-    return { ok: true, installationId: installationId!, parsed: await req.json() };
+    // Content-Length is optional and client-controlled. Measure the bytes
+    // actually received before parsing so chunked requests cannot bypass the
+    // expensive-endpoint payload cap.
+    const bytes = new Uint8Array(await req.arrayBuffer());
+    if (bytes.byteLength > MAX_BODY_BYTES) {
+      return {
+        ok: false,
+        category: "payload_too_large",
+        response: errorJson(
+          400,
+          "PAYLOAD_TOO_LARGE",
+          "Request body too large.",
+          {},
+          req,
+        ),
+      };
+    }
+    const text = new TextDecoder().decode(bytes);
+    return { ok: true, userId, parsed: JSON.parse(text) };
   } catch {
     return {
       ok: false,

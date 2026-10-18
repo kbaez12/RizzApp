@@ -10,10 +10,9 @@ import Observation
 /// real server-side quota persistence.
 @Observable
 final class LiveUsageService: UsageServicing {
-    /// Pre-fetch default so a cold launch doesn't block the flow; replaced
-    /// by the authoritative backend snapshot on first fetch. Fresh server
-    /// installations start with 0 refinements (granted per analysis).
-    private(set) var cached = UsageStatus(remaining: 5, limit: 5, tier: .free, refinementsRemaining: 0)
+    /// No optimistic allowance: access remains closed until the authenticated
+    /// backend returns a subscriber snapshot.
+    private(set) var cached = UsageStatus(remaining: 0, limit: 0, tier: .free, refinementsRemaining: 0)
     private var hasFetched = false
 
     private let client: APIClient
@@ -50,8 +49,8 @@ final class LiveUsageService: UsageServicing {
             apply(status)
             hasFetched = true
         } catch {
-            // Keep the optimistic cache; generation calls will sync usage.
-            // Never surface this silently-retried fetch to the user.
+            // Keep the closed cache. Bootstrap surfaces verification errors;
+            // generation calls remain protected by the backend.
         }
     }
 

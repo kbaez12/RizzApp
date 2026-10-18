@@ -1,13 +1,14 @@
 import Foundation
 import Observation
-import RevenueCat
+@_spi(Internal) import RevenueCat
 
 /// RevenueCat-backed subscriptions. This is the ONLY file that imports
 /// RevenueCat — everything else talks to `SubscriptionServicing`.
 ///
-/// No account system: RevenueCat is configured with our anonymous
-/// installation ID as the app user ID, so the RevenueCat webhook can map an
-/// entitlement change to the same installation row the quota system uses.
+/// RevenueCat is configured only after Supabase anonymous authentication.
+/// Customer Authentication validates the Supabase OIDC token, so the client
+/// cannot select or forge a RevenueCat App User ID. The backend independently
+/// validates the same Supabase bearer token.
 @Observable
 final class RevenueCatSubscriptionService: SubscriptionServicing {
     /// Single entitlement identifier configured in RevenueCat.
@@ -17,18 +18,75 @@ final class RevenueCatSubscriptionService: SubscriptionServicing {
 
     /// Maps our plan IDs back to RevenueCat packages so views never see one.
     private var packagesByPlanID: [String: Package] = [:]
+    private let publicSDKKey: String
+    private let authentication: any AuthenticationServicing
+    private let client: APIClient
+    private let onUsageSynced: (UsageStatus) -> Void
+    /// Bound to the current Supabase user ID. A process-wide Boolean is
+    /// not enough: a new anonymous user must not keep the previous
+    /// RevenueCat customer session.
+    private let identity: RevenueCatIdentitySynchronizer
+    private var isConfigured = false
 
-    init(publicSDKKey: String, installationID: String) {
-        Purchases.logLevel = .warn
-        Purchases.configure(withAPIKey: publicSDKKey, appUserID: installationID)
+    init(
+        publicSDKKey: String,
+        authentication: any AuthenticationServicing,
+        client: APIClient,
+        onUsageSynced: @escaping (UsageStatus) -> Void
+    ) {
+        self.publicSDKKey = publicSDKKey
+        self.authentication = authentication
+        self.client = client
+        self.onUsageSynced = onUsageSynced
+        self.identity = RevenueCatIdentitySynchronizer { user in
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                Purchases.shared.authentication.logIn(
+                    using: .oidc(Data(user.accessToken.utf8))
+                ) { _, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        }
     }
 
     func refresh() async {
-        guard let info = try? await Purchases.shared.customerInfo() else { return }
+        _ = try? await verify()
+    }
+
+    @discardableResult
+    func verify() async throws -> SubscriptionStatus {
+        let userID = try await configureIfNeeded()
+        let info: CustomerInfo
+        do {
+            info = try await Purchases.shared.customerInfo()
+        } catch {
+            await revokeLocalAccess(ifBoundTo: userID)
+            throw SubscriptionError.verificationUnavailable
+        }
+        guard await stillBound(to: userID) else {
+            await revokeLocalAccess(ifBoundTo: userID)
+            throw SubscriptionError.verificationUnavailable
+        }
+        guard hasActiveEntitlement(info) else {
+            await revokeLocalAccess(ifBoundTo: userID)
+            return status
+        }
+        try await confirmBackend(for: userID)
+        guard await stillBound(to: userID) else {
+            await revokeLocalAccess(ifBoundTo: userID)
+            throw SubscriptionError.verificationUnavailable
+        }
         apply(info)
+        return status
     }
 
     func offerings() async throws -> [SubscriptionPlan] {
+        try await configureIfNeeded()
         let offerings: Offerings
         do {
             offerings = try await Purchases.shared.offerings()
@@ -50,24 +108,56 @@ final class RevenueCatSubscriptionService: SubscriptionServicing {
     }
 
     func purchase(_ plan: SubscriptionPlan) async throws -> Bool {
+        let userID = try await configureIfNeeded()
         guard let package = packagesByPlanID[plan.id] else {
             throw SubscriptionError.notConfigured
         }
         do {
             let result = try await Purchases.shared.purchase(package: package)
             if result.userCancelled { return false }
+            guard await stillBound(to: userID) else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                throw SubscriptionError.verificationUnavailable
+            }
+            guard hasActiveEntitlement(result.customerInfo) else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                throw SubscriptionError.purchaseFailed
+            }
+            try await confirmBackend(for: userID)
+            guard await stillBound(to: userID) else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                throw SubscriptionError.verificationUnavailable
+            }
             apply(result.customerInfo)
             return status.isPremium
+        } catch let error as SubscriptionError {
+            throw error
         } catch {
             throw SubscriptionError.purchaseFailed
         }
     }
 
     func restorePurchases() async throws -> Bool {
+        let userID = try await configureIfNeeded()
         do {
             let info = try await Purchases.shared.restorePurchases()
+            guard await stillBound(to: userID) else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                throw SubscriptionError.verificationUnavailable
+            }
+            guard hasActiveEntitlement(info) else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                return false
+            }
+            try await confirmBackend(for: userID)
+            guard await stillBound(to: userID) else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                throw SubscriptionError.verificationUnavailable
+            }
             apply(info)
             return status.isPremium
+        } catch let error as SubscriptionError {
+            throw error
         } catch {
             throw SubscriptionError.purchaseFailed
         }
@@ -75,9 +165,82 @@ final class RevenueCatSubscriptionService: SubscriptionServicing {
 
     // MARK: - Mapping
 
+    @discardableResult
+    private func configureIfNeeded() async throws -> String {
+        let user: AuthenticatedUser
+        do {
+            user = try await authentication.authenticatedUser()
+        } catch {
+            throw SubscriptionError.verificationUnavailable
+        }
+        guard UUID(uuidString: user.id) != nil, !publicSDKKey.isEmpty else {
+            throw SubscriptionError.notConfigured
+        }
+        if !isConfigured {
+            Purchases.logLevel = .warn
+            let configuration = Configuration.Builder(withAPIKey: publicSDKKey)
+                .with(iamEnabled: true)
+                .build()
+            Purchases.configure(with: configuration)
+            isConfigured = true
+        }
+        let switchedIdentities = await identity.authenticatedUserID.map { $0 != user.id } ?? false
+        if switchedIdentities {
+            status = .free
+        }
+        do {
+            let didLogIn = try await identity.authenticate(user)
+            if didLogIn {
+                status = .free
+            }
+        } catch {
+            await revokeLocalAccess(ifBoundTo: user.id)
+            throw error
+        }
+        return user.id
+    }
+
+    private func stillBound(to userID: String) async -> Bool {
+        await identity.authenticatedUserID == userID
+    }
+
+    /// Drops local premium only for the identity that failed or changed.
+    /// A stale attempt must not erase a newer user's in-flight verification.
+    private func revokeLocalAccess(ifBoundTo userID: String) async {
+        let boundID = await identity.authenticatedUserID
+        if boundID == nil || boundID == userID {
+            status = .free
+        }
+    }
+
+    private func confirmBackend(for userID: String) async throws {
+        do {
+            let synced: SubscriptionSyncResponse = try await client.send(.subscriptionSync)
+            guard synced.usage.tier == .plus else {
+                await revokeLocalAccess(ifBoundTo: userID)
+                throw SubscriptionError.backendNotEntitled
+            }
+            onUsageSynced(synced.usage)
+        } catch let error as SubscriptionError {
+            throw error
+        } catch APIError.subscriptionRequired {
+            await revokeLocalAccess(ifBoundTo: userID)
+            throw SubscriptionError.backendNotEntitled
+        } catch {
+            await revokeLocalAccess(ifBoundTo: userID)
+            throw SubscriptionError.verificationUnavailable
+        }
+    }
+
+    private func hasActiveEntitlement(_ info: CustomerInfo) -> Bool {
+        guard let entitlement = info.entitlements[Self.entitlementID] else { return false }
+        return entitlement.isActive
+            && (entitlement.expirationDate.map { $0 > Date() } ?? false)
+    }
+
     private func apply(_ info: CustomerInfo) {
         guard let entitlement = info.entitlements[Self.entitlementID],
-              entitlement.isActive else {
+              hasActiveEntitlement(info) else {
             status = .free
             return
         }
@@ -142,5 +305,24 @@ final class RevenueCatSubscriptionService: SubscriptionServicing {
             return nil
         }
         return "About \(formatted)/month"
+    }
+}
+
+/// Accepts the backend's entitlement-and-usage response while retaining
+/// compatibility with an early raw-usage development response.
+private struct SubscriptionSyncResponse: Decodable {
+    let usage: UsageStatus
+
+    private enum CodingKeys: String, CodingKey {
+        case usage
+    }
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: CodingKeys.self),
+           let usage = try container.decodeIfPresent(UsageStatus.self, forKey: .usage) {
+            self.usage = usage
+        } else {
+            self.usage = try UsageStatus(from: decoder)
+        }
     }
 }

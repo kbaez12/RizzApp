@@ -16,7 +16,8 @@ packages:
   # Only third-party dependency in the project.
   RevenueCat:
     url: https://github.com/RevenueCat/purchases-ios
-    from: 5.0.0
+    # Customer Authentication / Supabase OIDC requires 5.88.0+.
+    from: 5.88.0
 
 targets:
   RizzApp:
@@ -41,6 +42,17 @@ targets:
         ENABLE_PREVIEWS: true
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: 1
+        # Public client configuration only. Supply these as Release build
+        # settings/CI variables; never put service-role or RevenueCat secret
+        # keys in this project.
+        INFOPLIST_KEY_SUPABASE_URL: "$(SUPABASE_URL)"
+        INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY: "$(SUPABASE_PUBLISHABLE_KEY)"
+        INFOPLIST_KEY_REVENUECAT_PUBLIC_SDK_KEY: "$(REVENUECAT_PUBLIC_SDK_KEY)"
+      configs:
+        Release:
+          SUPABASE_URL: ""
+          SUPABASE_PUBLISHABLE_KEY: ""
+          REVENUECAT_PUBLIC_SDK_KEY: ""
 
   RizzAppTests:
     type: bundle.unit-test

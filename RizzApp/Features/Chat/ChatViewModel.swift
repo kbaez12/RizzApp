@@ -27,7 +27,7 @@ final class ChatViewModel {
         case reply(GeneratedResponse)
         case followUpOptions
         case error(String)
-        case upgrade
+        case allowanceReached
     }
 
     private enum RetryAction {
@@ -62,17 +62,20 @@ final class ChatViewModel {
     private let usage: any UsageServicing
     private let consent: PrivacyConsentStore
     private let onQuotaExhausted: () -> Void
+    private let onSubscriptionRequired: () -> Void
 
     init(
         generation: any GenerationServicing,
         usage: any UsageServicing,
         consent: PrivacyConsentStore,
-        onQuotaExhausted: @escaping () -> Void
+        onQuotaExhausted: @escaping () -> Void,
+        onSubscriptionRequired: @escaping () -> Void = {}
     ) {
         self.generation = generation
         self.usage = usage
         self.consent = consent
         self.onQuotaExhausted = onQuotaExhausted
+        self.onSubscriptionRequired = onSubscriptionRequired
     }
 
     // MARK: - User actions
@@ -99,7 +102,7 @@ final class ChatViewModel {
             return
         }
         guard usage.canStartFullGeneration() else {
-            showUpgrade()
+            showAllowanceReached()
             return
         }
         self.goal = goal
@@ -124,7 +127,7 @@ final class ChatViewModel {
     func generateMore() async {
         guard !isBusy, goal != nil else { return }
         guard usage.canStartFullGeneration() else {
-            showUpgrade()
+            showAllowanceReached()
             return
         }
         append(.userChoice("Give me 3 more"))
@@ -134,7 +137,7 @@ final class ChatViewModel {
     func refine(_ action: RefinementAction) async {
         guard !isBusy, !latestReplies.isEmpty else { return }
         guard usage.canRefine() else {
-            showUpgrade()
+            showAllowanceReached()
             return
         }
         append(.userChoice(action.label))
@@ -228,8 +231,10 @@ final class ChatViewModel {
         removeTyping()
         isBusy = false
         switch error {
+        case APIError.subscriptionRequired, APIError.unauthorized:
+            onSubscriptionRequired()
         case APIError.quotaExceeded:
-            showUpgrade()
+            showAllowanceReached()
         case APIError.duplicateRequest:
             let freshRetry: RetryAction
             switch retry {
@@ -253,9 +258,9 @@ final class ChatViewModel {
         append(.error(message))
     }
 
-    private func showUpgrade() {
-        if messages.last?.kind != .upgrade {
-            append(.upgrade)
+    private func showAllowanceReached() {
+        if messages.last?.kind != .allowanceReached {
+            append(.allowanceReached)
         }
         onQuotaExhausted()
     }

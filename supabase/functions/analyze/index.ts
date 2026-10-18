@@ -1,6 +1,6 @@
 // POST /functions/v1/analyze — honest read of a conversation.
 //
-// Same guarantees as generate: publishable-key auth, rate limit, validation,
+// Same guarantees as generate: user-JWT auth, rate limit, validation,
 // atomic quota (an analysis costs one full analysis), refund on AI failure,
 // idempotent on request_id. Nothing about the conversation is stored or
 // logged.
@@ -16,12 +16,16 @@ import { configuredModel } from "../_shared/openai.ts";
 import { preflight } from "../_shared/request.ts";
 import { errorJson, json } from "../_shared/responses.ts";
 import { performReservedOperation } from "../_shared/idempotency.ts";
+import { authenticatedUserId } from "../_shared/auth.ts";
+import { reservationDenial } from "../_shared/subscription.ts";
 
 export default {
-  fetch: withSupabase({ auth: "publishable" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
     const startedAt = Date.now();
     const requestLogId = crypto.randomUUID();
     const devSimulation = Deno.env.get("DEV_ERROR_SIMULATION") === "true";
+    // deno-lint-ignore no-explicit-any
+    const admin = ctx.supabaseAdmin as any;
     const scenario = req.headers.get("x-debug-scenario");
     const useCanned = devSimulation && scenario === "canned";
 
@@ -44,7 +48,8 @@ export default {
       return errorJson(405, "METHOD_NOT_ALLOWED", "Use POST.", {}, req);
     }
 
-    const pre = await preflight(req, ctx.supabaseAdmin);
+    const userId = authenticatedUserId(ctx.userClaims);
+    const pre = await preflight(req, admin, userId);
     if (!pre.ok) {
       log(pre.response.status, pre.category);
       return pre.response;
@@ -57,9 +62,9 @@ export default {
     }
     const body = pre.parsed as GenerationRequestBody;
 
-    const { data: reservation, error: reserveError } = await ctx.supabaseAdmin
-      .rpc("reserve_usage", {
-        p_installation_id: pre.installationId,
+    const { data: reservation, error: reserveError } = await admin
+      .rpc("reserve_user_usage", {
+        p_user_id: userId,
         p_request_id: body.request_id,
         p_action_kind: "generation",
       });
@@ -67,9 +72,10 @@ export default {
       log(500, "reserve_failed");
       return errorJson(500, "INTERNAL", "Could not process request.", {}, req);
     }
-    if (reservation.outcome === "quota_exceeded") {
-      log(402, "quota_exceeded");
-      return errorJson(402, "QUOTA_EXCEEDED", "No analyses remaining.", {
+    const denial = reservationDenial(reservation.outcome);
+    if (denial) {
+      log(denial.status, denial.category);
+      return errorJson(denial.status, denial.code, denial.message, {
         usage: reservation.usage,
       }, req);
     }
@@ -110,8 +116,8 @@ export default {
       }
       const { analysis, metrics } = guarded.value;
 
-      const { data: commit, error: commitError } = await ctx.supabaseAdmin
-        .rpc("commit_reservation", {
+      const { data: commit, error: commitError } = await admin
+        .rpc("commit_user_reservation", {
           p_reservation_id: reservation.reservation_id,
         });
       log(200, commitError ? "commit_failed" : "analysis", metrics);
@@ -120,7 +126,7 @@ export default {
         usage: commitError ? reservation.usage : commit.usage,
       }, req);
     } catch {
-      await ctx.supabaseAdmin.rpc("release_reservation", {
+      await admin.rpc("release_user_reservation", {
         p_reservation_id: reservation.reservation_id,
       });
       log(500, "analysis_failed_refunded");
