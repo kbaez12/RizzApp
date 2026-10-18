@@ -117,7 +117,7 @@ final class RequestIdempotencyTests: XCTestCase {
             (429, Data("""
             {
               "error": { "code": "USAGE_LIMIT_EXCEEDED", "message": "Monthly allowance reached." },
-              "usage": { "remaining": 0, "limit": 150, "tier": "plus", "refinements_remaining": 0 }
+              "usage": { "remaining": 0, "limit": 200, "tier": "plus", "refinements_remaining": 0 }
             }
             """.utf8), [:])
         }

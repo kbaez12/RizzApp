@@ -30,16 +30,16 @@ final class MockSubscriptionService: SubscriptionServicing {
             SubscriptionPlan(
                 id: "$rc_monthly",
                 name: "Monthly",
-                price: "$6.99",
+                price: "Store price",
                 period: "month",
                 detail: nil
             ),
             SubscriptionPlan(
                 id: "$rc_annual",
                 name: "Yearly",
-                price: "$49.99",
+                price: "Store price",
                 period: "year",
-                detail: "About $4.17/month"
+                detail: nil
             ),
         ]
     }

@@ -1,6 +1,5 @@
 import { assertEquals, assertRejects } from "jsr:@std/assert";
 import {
-  applyTrustedUsagePeriod,
   classifyRevenueCatEvent,
   fetchRevenueCatSubscription,
   periodResetRequested,
@@ -84,7 +83,7 @@ Deno.test("webhook event classification grants, revokes, and ignores correctly",
   assertEquals(classifyRevenueCatEvent("REFUND"), "revoke");
   assertEquals(classifyRevenueCatEvent("TRANSFER"), "ownership");
   assertEquals(classifyRevenueCatEvent("TEST"), "ignore");
-  assertEquals(revenueCatEventResetsPeriod("INITIAL_PURCHASE"), true);
+  assertEquals(revenueCatEventResetsPeriod("INITIAL_PURCHASE"), false);
   assertEquals(revenueCatEventResetsPeriod("CANCELLATION"), false);
   assertEquals(revenueCatEventResetsPeriod("EXPIRATION"), false);
 });
@@ -492,170 +491,19 @@ for (
   });
 }
 
-const PERIOD_START = "2026-10-01T00:00:00.000Z";
-const LATER_PERIOD = "2026-11-01T00:00:00.000Z";
-const EVENT_NOW = "2026-10-18T19:00:00.000Z";
-const USED = {
-  analysesUsed: 41,
-  refinementsRemaining: 1,
-  periodStartedAt: PERIOD_START,
-};
-
-Deno.test("first verified active subscription opens a zeroed allowance", () => {
-  const created = applyTrustedUsagePeriod({
-    eventType: "INITIAL_PURCHASE",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: EVENT_NOW,
-    existing: null,
+// Actual month arithmetic and transactional resets are covered in PostgreSQL.
+for (
+  const type of [
+    "INITIAL_PURCHASE",
+    "RENEWAL",
+    "PRODUCT_CHANGE",
+    "SERVER_SYNC",
+    "TRANSFER",
+  ]
+) {
+  Deno.test(`${type} cannot request an event-driven allowance reset`, () => {
+    assertEquals(revenueCatEventResetsPeriod(type), false);
+    assertEquals(periodResetRequested(type, "2099-01-01T00:00:00Z"), false);
+    assertEquals(periodResetRequested(type, null), false);
   });
-  assertEquals(created, {
-    analysesUsed: 0,
-    refinementsRemaining: 0,
-    periodStartedAt: PERIOD_START,
-  });
-});
-
-Deno.test("repeated SERVER_SYNC during the same period preserves usage", () => {
-  const first = applyTrustedUsagePeriod({
-    eventType: "SERVER_SYNC",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  const second = applyTrustedUsagePeriod({
-    eventType: "SERVER_SYNC",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: "2026-10-18T19:05:00.000Z",
-    existing: first,
-  });
-  assertEquals(periodResetRequested("SERVER_SYNC", PERIOD_START), false);
-  assertEquals(second, USED);
-});
-
-Deno.test("missing period start never synthesizes a new billing month", () => {
-  const afterSync = applyTrustedUsagePeriod({
-    eventType: "SERVER_SYNC",
-    isActive: true,
-    trustedPeriodStartedAt: null,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  assertEquals(afterSync, USED);
-  assertEquals(periodResetRequested("RENEWAL", null), false);
-  const afterRenewalWithoutDate = applyTrustedUsagePeriod({
-    eventType: "RENEWAL",
-    isActive: true,
-    trustedPeriodStartedAt: null,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  assertEquals(afterRenewalWithoutDate, USED);
-});
-
-Deno.test("older billing-period event does not reset usage", () => {
-  const after = applyTrustedUsagePeriod({
-    eventType: "RENEWAL",
-    isActive: true,
-    trustedPeriodStartedAt: "2026-09-01T00:00:00.000Z",
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  assertEquals(after, USED);
-});
-
-Deno.test("duplicate lifecycle event with the same period preserves usage", () => {
-  const after = applyTrustedUsagePeriod({
-    eventType: "INITIAL_PURCHASE",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  assertEquals(after, USED);
-});
-
-Deno.test("legitimate renewal with a strictly newer trusted period resets usage", () => {
-  const after = applyTrustedUsagePeriod({
-    eventType: "RENEWAL",
-    isActive: true,
-    trustedPeriodStartedAt: LATER_PERIOD,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  assertEquals(after, {
-    analysesUsed: 0,
-    refinementsRemaining: 0,
-    periodStartedAt: LATER_PERIOD,
-  });
-});
-
-Deno.test("expired or revoked subscriptions do not reopen or reset usage", () => {
-  const after = applyTrustedUsagePeriod({
-    eventType: "EXPIRATION",
-    isActive: false,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  assertEquals(after, USED);
-  assertEquals(
-    applyTrustedUsagePeriod({
-      eventType: "SERVER_SYNC",
-      isActive: false,
-      trustedPeriodStartedAt: PERIOD_START,
-      eventAt: EVENT_NOW,
-      existing: USED,
-    }),
-    USED,
-  );
-});
-
-Deno.test("concurrent SERVER_SYNC applications preserve the same usage", () => {
-  const left = applyTrustedUsagePeriod({
-    eventType: "SERVER_SYNC",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  const right = applyTrustedUsagePeriod({
-    eventType: "SERVER_SYNC",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: "2026-10-18T19:00:01.000Z",
-    existing: USED,
-  });
-  assertEquals(left, USED);
-  assertEquals(right, USED);
-  assertEquals(
-    applyTrustedUsagePeriod({
-      eventType: "SERVER_SYNC",
-      isActive: true,
-      trustedPeriodStartedAt: PERIOD_START,
-      eventAt: "2026-10-18T19:00:02.000Z",
-      existing: left,
-    }),
-    USED,
-  );
-});
-
-Deno.test("pending billing identity then verified transaction keeps spent quota", () => {
-  const afterPendingSync = applyTrustedUsagePeriod({
-    eventType: "SERVER_SYNC",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: EVENT_NOW,
-    existing: USED,
-  });
-  const afterAppleIdentity = applyTrustedUsagePeriod({
-    eventType: "INITIAL_PURCHASE",
-    isActive: true,
-    trustedPeriodStartedAt: PERIOD_START,
-    eventAt: "2026-10-18T19:10:00.000Z",
-    existing: afterPendingSync,
-  });
-  assertEquals(afterAppleIdentity, USED);
-});
+}

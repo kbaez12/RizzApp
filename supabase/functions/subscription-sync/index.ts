@@ -80,8 +80,8 @@ export default {
       p_is_active: state.active,
       p_period_started_at: state.periodStartedAt,
       p_expires_at: state.expiresAt,
-      // SERVER_SYNC confirms current entitlement. It is not a billing-period
-      // boundary. A missing RevenueCat period start must never become now().
+      // This wire flag never requests a reset. Only the database clock and
+      // the fixed verified anchor can advance a due monthly allowance.
       p_reset_period: periodResetRequested(
         "SERVER_SYNC",
         state.periodStartedAt,
@@ -113,7 +113,7 @@ export default {
       return json(200, {
         subscribed: false,
         remaining: 0,
-        limit: 150,
+        limit: 200,
         refinements_remaining: 0,
         verification_status: "pending_verification",
         retry_after_seconds: 5,

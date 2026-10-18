@@ -206,14 +206,6 @@ export const REVOKES_PLUS = new Set([
   "REFUND",
 ]);
 
-/** A new or renewed period resets the monthly allowance. */
-export const RESETS_PERIOD = new Set([
-  "INITIAL_PURCHASE",
-  "RENEWAL",
-  "PRODUCT_CHANGE",
-  "NON_RENEWING_PURCHASE",
-]);
-
 export const OWNERSHIP_EVENTS = new Set(["TRANSFER", "SUBSCRIBER_ALIAS"]);
 
 export function classifyRevenueCatEvent(
@@ -225,59 +217,19 @@ export function classifyRevenueCatEvent(
   return "ignore";
 }
 
-export function revenueCatEventResetsPeriod(type: string): boolean {
-  return RESETS_PERIOD.has(type);
+/** Event types and purchase timestamps never authorize an early quota reset.
+ * Calendar allowance advancement is enforced exclusively in PostgreSQL using
+ * its clock and the billing account's immutable verified purchase anchor.
+ * Retained for the existing RPC wire contract; p_reset_period is ignored. */
+export function revenueCatEventResetsPeriod(_type: string): boolean {
+  return false;
 }
 
-/**
- * Whether Postgres may be asked to zero the monthly allowance.
- * SERVER_SYNC and grant events without a trusted period start must never
- * reset usage. A missing timestamp is not replaced with now().
- */
 export function periodResetRequested(
-  eventType: string,
-  trustedPeriodStartedAt: string | null,
+  _eventType: string,
+  _trustedPeriodStartedAt: string | null,
 ): boolean {
-  return revenueCatEventResetsPeriod(eventType) &&
-    trustedPeriodStartedAt !== null;
-}
-
-export interface UsagePeriodState {
-  analysesUsed: number;
-  refinementsRemaining: number;
-  periodStartedAt: string;
-}
-
-/**
- * Mirrors apply_revenuecat_event's user_usage ON CONFLICT rules so the
- * quota-reset policy can be unit-tested without a live database.
- */
-export function applyTrustedUsagePeriod(args: {
-  eventType: string;
-  isActive: boolean;
-  trustedPeriodStartedAt: string | null;
-  eventAt: string;
-  existing: UsagePeriodState | null;
-}): UsagePeriodState | null {
-  if (!args.isActive) return args.existing;
-  if (!args.existing) {
-    return {
-      analysesUsed: 0,
-      refinementsRemaining: 0,
-      periodStartedAt: args.trustedPeriodStartedAt ?? args.eventAt,
-    };
-  }
-  const incoming = args.trustedPeriodStartedAt;
-  const reset = periodResetRequested(args.eventType, incoming) &&
-    incoming !== null &&
-    Date.parse(incoming) > Date.parse(args.existing.periodStartedAt);
-  return {
-    analysesUsed: reset ? 0 : args.existing.analysesUsed,
-    refinementsRemaining: reset ? 0 : args.existing.refinementsRemaining,
-    periodStartedAt: reset && incoming
-      ? incoming
-      : args.existing.periodStartedAt,
-  };
+  return false;
 }
 
 export function constantTimeEqual(left: string, right: string): boolean {

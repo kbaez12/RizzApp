@@ -91,8 +91,8 @@ struct PaywallView: View {
                 .foregroundStyle(Theme.textPrimary)
 
             VStack(alignment: .leading, spacing: Spacing.sm) {
-                benefit("Up to 150 conversation analyses each month")
-                benefit("Two follow-up refinements included per analysis")
+                benefit("200 charged AI operations each month")
+                benefit("Two follow-up refinements included per charged operation")
                 benefit("Cancel anytime")
             }
         }

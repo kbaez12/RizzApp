@@ -231,13 +231,13 @@ final class APIClientTests: XCTestCase {
 
     func testAuthenticatedSubscriberUsageDecode() async throws {
         stub(status: 200, json: """
-        { "subscribed": true, "remaining": 149, "limit": 150, "refinements_remaining": 2 }
+        { "subscribed": true, "remaining": 199, "limit": 200, "refinements_remaining": 2 }
         """)
         let status: UsageStatus = try await client.send(.usage)
 
         XCTAssertEqual(status.tier, .plus)
-        XCTAssertEqual(status.remaining, 149)
-        XCTAssertEqual(status.limit, 150)
+        XCTAssertEqual(status.remaining, 199)
+        XCTAssertEqual(status.limit, 200)
     }
 
     // MARK: Header contract
@@ -304,7 +304,7 @@ final class APIClientTests: XCTestCase {
         stub(status: 429, json: """
         {
           "error": { "code": "USAGE_LIMIT_EXCEEDED", "message": "Monthly allowance reached." },
-          "usage": { "remaining": 0, "limit": 150, "tier": "plus", "refinements_remaining": 0 }
+          "usage": { "remaining": 0, "limit": 200, "tier": "plus", "refinements_remaining": 0 }
         }
         """)
         do {
@@ -312,7 +312,7 @@ final class APIClientTests: XCTestCase {
             XCTFail("Expected quotaExceeded")
         } catch APIError.quotaExceeded(let usage) {
             XCTAssertEqual(usage?.remaining, 0)
-            XCTAssertEqual(usage?.limit, 150)
+            XCTAssertEqual(usage?.limit, 200)
         }
     }
 

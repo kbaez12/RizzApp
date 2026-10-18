@@ -5,8 +5,8 @@ import XCTest
 final class UsageStoreTests: XCTestCase {
     func testSubscriberStartsWithMonthlyAllowance() {
         let store = MockUsageStore()
-        XCTAssertEqual(store.status.remaining, 150)
-        XCTAssertEqual(store.status.limit, 150)
+        XCTAssertEqual(store.status.remaining, 200)
+        XCTAssertEqual(store.status.limit, 200)
         XCTAssertEqual(store.status.tier, .plus)
         XCTAssertTrue(store.canStartFullGeneration())
     }
@@ -56,6 +56,6 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.status.limit, 0)
         XCTAssertFalse(store.canStartFullGeneration())
         store.upgradeToPlus()
-        XCTAssertEqual(store.status.limit, 150)
+        XCTAssertEqual(store.status.limit, 200)
     }
 }

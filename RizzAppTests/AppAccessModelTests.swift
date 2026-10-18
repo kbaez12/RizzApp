@@ -232,8 +232,8 @@ private final class AccessTestUsage: UsageServicing {
 
     init(tier: UsageStatus.Tier) {
         status = UsageStatus(
-            remaining: tier == .plus ? 150 : 0,
-            limit: tier == .plus ? 150 : 0,
+            remaining: tier == .plus ? 200 : 0,
+            limit: tier == .plus ? 200 : 0,
             tier: tier,
             refinementsRemaining: 0
         )

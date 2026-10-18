@@ -8,6 +8,7 @@ create table public.billing_accounts (
   id uuid primary key default gen_random_uuid(),
   original_transaction_id text not null unique
     check (original_transaction_id <> '' and original_transaction_id not like 'pending:%'),
+  allowance_anchor_at timestamptz,
   ownership_event_at timestamptz,
   ownership_event_id text,
   user_id uuid references auth.users(id) on delete set null,
@@ -81,6 +82,7 @@ create table public.user_usage_requests (
   charge_kind text not null check (charge_kind in ('analysis', 'free_refinement')),
   status text not null default 'reserved'
     check (status in ('reserved', 'committed', 'released')),
+  allowance_period_started_at timestamptz not null,
   prev_analyses_used integer not null,
   prev_refinements_remaining integer not null,
   created_at timestamptz not null default now(),
@@ -120,7 +122,7 @@ declare
   v_account public.billing_accounts;
   v_entitlement public.subscription_entitlements;
   v_usage public.user_usage;
-  v_limit constant integer := 150;
+  v_limit constant integer := 200;
 begin
   select * into v_account
   from public.billing_accounts
@@ -151,6 +153,11 @@ begin
   from public.user_usage
   where billing_account_id = v_account.id;
 
+  if not found then
+    return jsonb_build_object('subscribed', false, 'remaining', 0,
+      'limit', v_limit, 'refinements_remaining', 0);
+  end if;
+
   return jsonb_build_object(
     'subscribed', true,
     'remaining', greatest(0, v_limit - coalesce(v_usage.analyses_used, 0)),
@@ -161,6 +168,79 @@ begin
   );
 end;
 $$;
+
+-- Calendar windows use the original UTC anchor, retaining the original day
+-- after short months (Jan 31 -> Feb 28/29 -> Mar 31). End is exclusive.
+create function public.monthly_allowance_window(p_anchor timestamptz, p_at timestamptz)
+returns table(window_start timestamptz, window_end timestamptz)
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare
+  v_anchor timestamp := p_anchor at time zone 'UTC';
+  v_at timestamp := p_at at time zone 'UTC';
+  v_months integer;
+begin
+  if p_at < p_anchor then return; end if;
+  v_months := (extract(year from v_at)::integer - extract(year from v_anchor)::integer) * 12
+    + extract(month from v_at)::integer - extract(month from v_anchor)::integer;
+  if v_anchor + make_interval(months => v_months) > v_at then
+    v_months := v_months - 1;
+  end if;
+  window_start := (v_anchor + make_interval(months => v_months)) at time zone 'UTC';
+  window_end := (v_anchor + make_interval(months => v_months + 1)) at time zone 'UTC';
+  return next;
+end;
+$$;
+
+-- Server-only: callers cannot supply a reset date or move the fixed anchor.
+-- Both annual and monthly paid entitlements use exactly the same schedule.
+create function public.refresh_billing_allowance(p_account_id uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_account public.billing_accounts;
+  v_entitlement public.subscription_entitlements;
+  v_start timestamptz;
+  v_end timestamptz;
+begin
+  select * into v_account from public.billing_accounts
+  where id = p_account_id for update;
+  if not found or v_account.user_id is null or v_account.allowance_anchor_at is null then
+    return;
+  end if;
+  select * into v_entitlement from public.subscription_entitlements
+  where billing_account_id = p_account_id;
+  if not found or not v_entitlement.is_active or v_entitlement.expires_at <= now() then
+    return;
+  end if;
+  select window_start, window_end into v_start, v_end
+  from public.monthly_allowance_window(v_account.allowance_anchor_at, now());
+  if not found then return; end if;
+  insert into public.user_usage(billing_account_id, period_started_at, period_ends_at)
+  values (p_account_id, v_start, least(v_end, v_entitlement.expires_at))
+  on conflict (billing_account_id) do update set
+    analyses_used = case when excluded.period_started_at > public.user_usage.period_started_at
+      then 0 else public.user_usage.analyses_used end,
+    refinements_remaining = case when excluded.period_started_at > public.user_usage.period_started_at
+      then 0 else public.user_usage.refinements_remaining end,
+    period_started_at = greatest(public.user_usage.period_started_at, excluded.period_started_at),
+    period_ends_at = excluded.period_ends_at,
+    updated_at = now();
+end;
+$$;
+
+revoke execute on function public.monthly_allowance_window(timestamptz, timestamptz)
+  from public, anon, authenticated;
+revoke execute on function public.refresh_billing_allowance(uuid)
+  from public, anon, authenticated;
+grant execute on function public.monthly_allowance_window(timestamptz, timestamptz) to service_role;
+grant execute on function public.refresh_billing_allowance(uuid) to service_role;
 
 -- Atomic server-only entitlement ingestion. The caller has already validated
 -- app/environment/store/entitlement values. Ordering and deduplication are
@@ -236,7 +316,8 @@ begin
     update public.subscription_entitlements
     set is_active = p_is_active, expires_at = p_expires_at, updated_at = now()
     where billing_account_id = v_account.id;
-    -- Sync never advances lifecycle ordering or resets spending.
+    -- Server time may advance a due month; sync timestamps never reset it.
+    perform public.refresh_billing_allowance(v_account.id);
     update public.revenuecat_webhook_events set status = 'applied'
     where event_id = p_event_id;
     return jsonb_build_object('outcome', 'applied',
@@ -297,6 +378,7 @@ begin
         values (v_alias, v_account.id) on conflict do nothing;
       end if;
     end loop;
+    perform public.refresh_billing_allowance(v_account.id);
     update public.revenuecat_webhook_events set status = 'applied', reason = 'ownership_updated'
     where event_id = p_event_id;
     return jsonb_build_object('outcome', 'applied',
@@ -370,36 +452,15 @@ begin
     last_event_id = excluded.last_event_id,
     updated_at = now();
 
-  if p_is_active then
-    -- First insert may use p_event_at only as a placeholder start. Resets
-    -- require a trusted p_period_started_at that is strictly newer than the
-    -- stored period. Never treat now()/p_event_at as a new billing month.
-    insert into public.user_usage(
-      billing_account_id, period_started_at, period_ends_at
-    ) values (
-      v_account.id, coalesce(p_period_started_at, p_event_at), p_expires_at
-    )
-    on conflict (billing_account_id) do update set
-      analyses_used = case
-        when p_reset_period
-          and p_period_started_at is not null
-          and p_period_started_at > public.user_usage.period_started_at
-        then 0 else public.user_usage.analyses_used end,
-      refinements_remaining = case
-        when p_reset_period
-          and p_period_started_at is not null
-          and p_period_started_at > public.user_usage.period_started_at
-        then 0 else public.user_usage.refinements_remaining end,
-      period_started_at = case
-        when p_reset_period
-          and p_period_started_at is not null
-          and p_period_started_at > public.user_usage.period_started_at
-        then p_period_started_at
-        else public.user_usage.period_started_at
-      end,
-      period_ends_at = coalesce(p_expires_at, public.user_usage.period_ends_at),
-      updated_at = now();
+  -- The first usable, verified paid start fixes the allowance schedule.
+  -- Renewal, sync, transfer and product changes never re-anchor it.
+  if p_is_active and p_period_started_at is not null
+     and p_period_started_at <= now() and p_period_started_at < p_expires_at then
+    update public.billing_accounts
+    set allowance_anchor_at = p_period_started_at
+    where id = v_account.id and allowance_anchor_at is null;
   end if;
+  perform public.refresh_billing_allowance(v_account.id);
 
   update public.revenuecat_webhook_events
   set status = 'applied'
@@ -431,7 +492,10 @@ begin
   select * into v_usage from public.user_usage
   where billing_account_id = v_res.billing_account_id for update;
 
-  if v_res.charge_kind = 'free_refinement' then
+  if v_usage.period_started_at is distinct from v_res.allowance_period_started_at then
+    -- This reservation belongs to an older month: do not credit the new month.
+    null;
+  elsif v_res.charge_kind = 'free_refinement' then
     update public.user_usage
     set refinements_remaining = least(2, refinements_remaining + 1),
         updated_at = now()
@@ -474,7 +538,7 @@ declare
   v_stale uuid;
   v_charge text;
   v_reservation_id uuid;
-  v_limit constant integer := 150;
+  v_limit constant integer := 200;
 begin
   if p_action_kind not in ('generation', 'refinement') then
     raise exception 'invalid action_kind %', p_action_kind;
@@ -500,15 +564,14 @@ begin
     );
   end if;
 
-  insert into public.user_usage(
-    billing_account_id, period_started_at, period_ends_at
-  ) values (
-    v_account.id, coalesce(v_entitlement.period_started_at, now()),
-    v_entitlement.expires_at
-  ) on conflict (billing_account_id) do nothing;
+  perform public.refresh_billing_allowance(v_account.id);
 
   select * into v_usage from public.user_usage
   where billing_account_id = v_account.id for update;
+  if not found then
+    return jsonb_build_object('outcome', 'subscription_required',
+      'usage', public.user_usage_status(p_user_id));
+  end if;
 
   select * into v_existing from public.user_usage_requests
   where billing_account_id = v_account.id and request_id = p_request_id;
@@ -545,10 +608,10 @@ begin
 
   insert into public.user_usage_requests(
     billing_account_id, request_id, action_kind, charge_kind,
-    prev_analyses_used, prev_refinements_remaining
+    allowance_period_started_at, prev_analyses_used, prev_refinements_remaining
   ) values (
     v_account.id, p_request_id, p_action_kind, v_charge,
-    v_usage.analyses_used, v_usage.refinements_remaining
+    v_usage.period_started_at, v_usage.analyses_used, v_usage.refinements_remaining
   ) returning reservation_id into v_reservation_id;
 
   if v_charge = 'analysis' then
@@ -602,12 +665,20 @@ $$;
 
 create function public.get_user_usage(p_user_id uuid)
 returns jsonb
-language sql
-stable
+language plpgsql
 security invoker
 set search_path = ''
 as $$
-  select public.user_usage_status(p_user_id)
+declare
+  v_account_id uuid;
+begin
+  select id into v_account_id from public.billing_accounts
+  where user_id = p_user_id for update;
+  if found then
+    perform public.refresh_billing_allowance(v_account_id);
+  end if;
+  return public.user_usage_status(p_user_id);
+end;
 $$;
 
 revoke execute on function public.user_usage_status(uuid)
@@ -636,3 +707,7 @@ grant execute on function public.reserve_user_usage(uuid, uuid, text)
 grant execute on function public.commit_user_reservation(uuid)
   to service_role;
 grant execute on function public.get_user_usage(uuid) to service_role;
+
+-- Supersede the historical Plus setting without editing applied migrations.
+-- App-facing functions use the authenticated billing-account allowance above.
+update public.usage_config set full_generation_allowance = 200 where tier = 'plus';

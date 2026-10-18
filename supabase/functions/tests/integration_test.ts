@@ -280,7 +280,7 @@ Deno.test({
 }, async () => {
   const usage = await (await callUsage(PLUS_INSTALLATION)).json();
   assertEquals(usage.tier, "plus");
-  assertEquals(usage.limit, 150);
+  assertEquals(usage.limit, 200);
 });
 
 Deno.test({ name: "invalid apikey is rejected", ignore: !RUN }, async () => {

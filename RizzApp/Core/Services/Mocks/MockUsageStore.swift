@@ -6,7 +6,7 @@ import Observation
 @Observable
 final class MockUsageStore: UsageServicing {
     struct Config {
-        var monthlyAllowance = 150
+        var monthlyAllowance = 200
         var includedRefinementsPerAnalysis = 2
     }
 

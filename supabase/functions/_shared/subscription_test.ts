@@ -46,7 +46,7 @@ Deno.test("mandatory subscription denial never allows a model call", async () =>
   let modelCalls = 0;
   const reservation = {
     outcome: "subscription_required",
-    usage: { subscribed: false, remaining: 0, limit: 150 },
+    usage: { subscribed: false, remaining: 0, limit: 200 },
   };
   const denial = reservationDenial(reservation.outcome);
   assert(denial);

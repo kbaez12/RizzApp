@@ -119,6 +119,6 @@ Deno.test({
   assertEquals(usage.status, 200);
   const body = await usage.json();
   assertEquals(body.subscribed, true);
-  assertEquals(body.limit, 150);
-  assertEquals(body.remaining, 150);
+  assertEquals(body.limit, 200);
+  assertEquals(body.remaining, 200);
 });
