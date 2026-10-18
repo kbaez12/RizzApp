@@ -23,15 +23,16 @@ function subscriberPayload(overrides: {
           product_identifier: PRODUCT_ID,
           expires_date: FUTURE,
           purchase_date: new Date().toISOString(),
-          original_transaction_id: "1000000123456789",
         },
       },
       subscriptions: overrides.subscriptions ?? {
         [PRODUCT_ID]: {
-          original_transaction_id: "1000000123456789",
+          store_transaction_id: "1000000123456789",
+          expires_date: FUTURE,
           purchase_date: new Date().toISOString(),
-          store: "APP_STORE",
-          environment: "SANDBOX",
+          store: "app_store",
+          is_sandbox: true,
+          period_type: "normal",
         },
       },
     },
@@ -91,7 +92,10 @@ Deno.test("webhook event classification grants, revokes, and ignores correctly",
 Deno.test("active plus entitlement is derived only from RevenueCat", async () => {
   await withRevenueCatEnv(async () => {
     globalThis.fetch = (input) => {
-      assertEquals(String(input), `https://revenuecat.test/v1/subscribers/${USER_ID}`);
+      assertEquals(
+        String(input),
+        `https://revenuecat.test/v1/subscribers/${USER_ID}`,
+      );
       return Promise.resolve(
         new Response(JSON.stringify(subscriberPayload()), { status: 200 }),
       );
@@ -100,7 +104,7 @@ Deno.test("active plus entitlement is derived only from RevenueCat", async () =>
     const state = await fetchRevenueCatSubscription(USER_ID);
     assertEquals(state.active, true);
     assertEquals(state.productId, PRODUCT_ID);
-    assertEquals(state.originalTransactionId, "1000000123456789");
+    assertEquals(state.originalTransactionId, null);
     assertEquals(state.store, "APP_STORE");
     assertEquals(state.environment, "SANDBOX");
   });
@@ -119,6 +123,8 @@ Deno.test("missing entitlement is inactive and does not invent lifetime access",
     assertEquals(state.active, false);
     assertEquals(state.productId, null);
     assertEquals(state.originalTransactionId, null);
+    assertEquals(state.store, "");
+    assertEquals(state.environment, "");
   });
 });
 
@@ -184,7 +190,8 @@ Deno.test("unexpected product is rejected", async () => {
 
 Deno.test("RevenueCat lookup failures fail closed", async () => {
   await withRevenueCatEnv(async () => {
-    globalThis.fetch = () => Promise.resolve(new Response("no", { status: 500 }));
+    globalThis.fetch = () =>
+      Promise.resolve(new Response("no", { status: 500 }));
     await assertRejects(
       () => fetchRevenueCatSubscription(USER_ID),
       Error,
@@ -207,8 +214,10 @@ Deno.test("missing purchase dates stay null instead of inventing now()", async (
             },
             subscriptions: {
               [PRODUCT_ID]: {
-                store: "APP_STORE",
-                environment: "SANDBOX",
+                store: "app_store",
+                is_sandbox: true,
+                period_type: "normal",
+                expires_date: FUTURE,
               },
             },
           })),
@@ -218,9 +227,270 @@ Deno.test("missing purchase dates stay null instead of inventing now()", async (
     const state = await fetchRevenueCatSubscription(USER_ID);
     assertEquals(state.active, true);
     assertEquals(state.periodStartedAt, null);
-    assertEquals(periodResetRequested("SERVER_SYNC", state.periodStartedAt), false);
+    assertEquals(
+      periodResetRequested("SERVER_SYNC", state.periodStartedAt),
+      false,
+    );
   });
 });
+
+function mockSubscriber(payload: unknown) {
+  globalThis.fetch = () =>
+    Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }));
+}
+
+Deno.test("production monthly subscription uses is_sandbox false", async () => {
+  await withRevenueCatEnv(async () => {
+    Deno.env.set("REVENUECAT_EXPECTED_ENVIRONMENT", "PRODUCTION");
+    const payload = subscriberPayload();
+    payload.subscriber.subscriptions[PRODUCT_ID].is_sandbox = false;
+    mockSubscriber(payload);
+    const state = await fetchRevenueCatSubscription(USER_ID);
+    assertEquals(state.active, true);
+    assertEquals(state.environment, "PRODUCTION");
+  });
+});
+
+Deno.test("allowlisted yearly subscription is active", async () => {
+  await withRevenueCatEnv(async () => {
+    const payload = subscriberPayload();
+    const subscription = payload.subscriber.subscriptions[PRODUCT_ID];
+    payload.subscriber.entitlements.plus.product_identifier =
+      "greenshot_yearly";
+    payload.subscriber.subscriptions = { greenshot_yearly: subscription };
+    mockSubscriber(payload);
+    const state = await fetchRevenueCatSubscription(USER_ID);
+    assertEquals(state.active, true);
+    assertEquals(state.productId, "greenshot_yearly");
+  });
+});
+
+const INVALID_ACTIVE_SUBSCRIPTIONS: {
+  name: string;
+  field: string;
+  value: unknown;
+  error: string;
+}[] = [
+  ...[undefined, null, "true", "false", 0, 1, {}, []].map((value) => ({
+    name: `invalid is_sandbox ${JSON.stringify(value)}`,
+    field: "is_sandbox",
+    value,
+    error: "environment",
+  })),
+  ...[
+    undefined,
+    null,
+    "",
+    123,
+    "play_store",
+    "stripe",
+    "unknown",
+    "promotional",
+  ]
+    .map((value) => ({
+      name: `invalid store ${JSON.stringify(value)}`,
+      field: "store",
+      value,
+      error: "store",
+    })),
+  ...[
+    undefined,
+    null,
+    "",
+    1,
+    "trial",
+    "intro",
+    "promotional",
+    "prepaid",
+    "NORMAL",
+    "unknown",
+  ]
+    .map((value) => ({
+      name: `ineligible period_type ${JSON.stringify(value)}`,
+      field: "period_type",
+      value,
+      error: "period type",
+    })),
+  {
+    name: "refunded subscription",
+    field: "refunded_at",
+    value: PAST,
+    error: "refunded",
+  },
+];
+
+for (const { name, field, value, error } of INVALID_ACTIVE_SUBSCRIPTIONS) {
+  Deno.test(`${name} cannot grant paid access`, async () => {
+    await withRevenueCatEnv(async () => {
+      const payload = subscriberPayload();
+      payload.subscriber.subscriptions[PRODUCT_ID][field] = value;
+      mockSubscriber(payload);
+      await assertRejects(
+        () => fetchRevenueCatSubscription(USER_ID),
+        Error,
+        error,
+      );
+    });
+  });
+}
+
+for (const expectedEnvironment of ["PRODUCTION", "SANDBOX"]) {
+  Deno.test(`opposite sandbox flag is rejected for ${expectedEnvironment}`, async () => {
+    await withRevenueCatEnv(async () => {
+      Deno.env.set("REVENUECAT_EXPECTED_ENVIRONMENT", expectedEnvironment);
+      const payload = subscriberPayload();
+      payload.subscriber.subscriptions[PRODUCT_ID].is_sandbox =
+        expectedEnvironment === "PRODUCTION";
+      mockSubscriber(payload);
+      await assertRejects(
+        () => fetchRevenueCatSubscription(USER_ID),
+        Error,
+        "environment",
+      );
+    });
+  });
+}
+
+Deno.test("legacy environment cannot override a missing sandbox flag", async () => {
+  await withRevenueCatEnv(async () => {
+    const payload = subscriberPayload();
+    delete payload.subscriber.subscriptions[PRODUCT_ID].is_sandbox;
+    payload.subscriber.subscriptions[PRODUCT_ID].environment = "SANDBOX";
+    mockSubscriber(payload);
+    await assertRejects(
+      () => fetchRevenueCatSubscription(USER_ID),
+      Error,
+      "environment",
+    );
+  });
+});
+
+for (
+  const subscriptions of [undefined, null, [], {}, { unrelated: {} }, {
+    [PRODUCT_ID]: null,
+  }]
+) {
+  Deno.test(`missing exact subscription ${JSON.stringify(subscriptions)} fails closed`, async () => {
+    await withRevenueCatEnv(async () => {
+      mockSubscriber({
+        subscriber: { ...subscriberPayload().subscriber, subscriptions },
+      });
+      await assertRejects(
+        () => fetchRevenueCatSubscription(USER_ID),
+        Error,
+        "matching subscription",
+      );
+    });
+  });
+}
+
+for (const field of ["entitlements", "subscriptions"] as const) {
+  for (const expiration of [undefined, null, "invalid", PAST]) {
+    Deno.test(`${field} expiration ${JSON.stringify(expiration)} cannot grant access`, async () => {
+      await withRevenueCatEnv(async () => {
+        const payload = subscriberPayload();
+        const record = field === "entitlements"
+          ? payload.subscriber.entitlements.plus
+          : payload.subscriber.subscriptions[PRODUCT_ID];
+        record.expires_date = expiration;
+        mockSubscriber(payload);
+        assertEquals(
+          (await fetchRevenueCatSubscription(USER_ID)).active,
+          false,
+        );
+      });
+    });
+  }
+}
+
+Deno.test("earlier verified expiration limits access", async () => {
+  await withRevenueCatEnv(async () => {
+    const payload = subscriberPayload();
+    const earlier = new Date(Date.now() + 60_000).toISOString();
+    payload.subscriber.subscriptions[PRODUCT_ID].expires_date = earlier;
+    mockSubscriber(payload);
+    const state = await fetchRevenueCatSubscription(USER_ID);
+    assertEquals(state.active, true);
+    assertEquals(state.expiresAt, earlier);
+  });
+});
+
+Deno.test("cancellation preserves a normal paid period until expiration", async () => {
+  await withRevenueCatEnv(async () => {
+    const payload = subscriberPayload();
+    payload.subscriber.subscriptions[PRODUCT_ID].unsubscribe_detected_at = PAST;
+    mockSubscriber(payload);
+    assertEquals((await fetchRevenueCatSubscription(USER_ID)).active, true);
+  });
+});
+
+Deno.test("undocumented original transaction fields are never used as identity", async () => {
+  await withRevenueCatEnv(async () => {
+    const payload = subscriberPayload();
+    payload.subscriber.subscriptions[PRODUCT_ID].original_transaction_id =
+      "unverified";
+    payload.subscriber.entitlements.plus.original_transaction_id =
+      "also-unverified";
+    mockSubscriber(payload);
+    const state = await fetchRevenueCatSubscription(USER_ID);
+    assertEquals(state.active, true);
+    assertEquals(state.originalTransactionId, null);
+  });
+});
+
+for (
+  const payload of [
+    null,
+    [],
+    "invalid",
+    {},
+    { subscriber: null },
+    { subscriber: [] },
+    { subscriber: {} },
+    { subscriber: { entitlements: [] } },
+    { subscriber: { entitlements: { plus: null } } },
+    { subscriber: { entitlements: { plus: [] } } },
+  ]
+) {
+  Deno.test(`malformed response ${JSON.stringify(payload)} fails closed`, async () => {
+    await withRevenueCatEnv(async () => {
+      mockSubscriber(payload);
+      await assertRejects(
+        () => fetchRevenueCatSubscription(USER_ID),
+        Error,
+        "malformed",
+      );
+    });
+  });
+}
+
+Deno.test("malformed JSON fails closed", async () => {
+  await withRevenueCatEnv(async () => {
+    globalThis.fetch = () => Promise.resolve(new Response("{"));
+    await assertRejects(
+      () => fetchRevenueCatSubscription(USER_ID),
+      SyntaxError,
+    );
+  });
+});
+
+for (
+  const [name, value] of [
+    ["REVENUECAT_EXPECTED_STORE", undefined],
+    ["REVENUECAT_EXPECTED_ENVIRONMENT", undefined],
+    ["REVENUECAT_EXPECTED_STORE", "PROMOTIONAL"],
+    ["REVENUECAT_EXPECTED_ENVIRONMENT", "unknown"],
+  ]
+) {
+  Deno.test(`invalid source configuration ${name} ${value} fails closed`, async () => {
+    await withRevenueCatEnv(async () => {
+      if (value === undefined) Deno.env.delete(name!);
+      else Deno.env.set(name!, value);
+      mockSubscriber(subscriberPayload());
+      await assertRejects(() => fetchRevenueCatSubscription(USER_ID), Error);
+    });
+  });
+}
 
 const PERIOD_START = "2026-10-01T00:00:00.000Z";
 const LATER_PERIOD = "2026-11-01T00:00:00.000Z";

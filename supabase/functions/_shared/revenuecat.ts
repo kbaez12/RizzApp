@@ -20,6 +20,10 @@ function optionalDate(value: unknown): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Fetches subscription truth directly from RevenueCat. No client-supplied
  * entitlement, product, expiry, or transaction fields are accepted. */
 export async function fetchRevenueCatSubscription(
@@ -35,6 +39,17 @@ export async function fetchRevenueCatSubscription(
   );
   if (expectedProducts.size === 0) {
     throw new Error("REVENUECAT_PRODUCT_IDS is not configured");
+  }
+  const expectedStore = requiredEnv("REVENUECAT_EXPECTED_STORE").toUpperCase();
+  const expectedEnvironment = requiredEnv("REVENUECAT_EXPECTED_ENVIRONMENT")
+    .toUpperCase();
+  if (
+    expectedStore !== "APP_STORE" ||
+    !["SANDBOX", "PRODUCTION"].includes(expectedEnvironment)
+  ) {
+    throw new Error(
+      "RevenueCat subscription source configuration is unsupported",
+    );
   }
   const base = Deno.env.get("REVENUECAT_API_BASE_URL")?.trim() ||
     "https://api.revenuecat.com/v1";
@@ -52,24 +67,34 @@ export async function fetchRevenueCatSubscription(
     throw new Error(`RevenueCat subscriber lookup failed (${response.status})`);
   }
 
-  const payload = await response.json() as Record<string, unknown>;
-  const subscriber = payload.subscriber as Record<string, unknown> | undefined;
-  const entitlements = subscriber?.entitlements as
-    | Record<string, Record<string, unknown>>
-    | undefined;
-  const entitlement = entitlements?.[entitlementId];
+  const payload: unknown = await response.json();
+  if (
+    !isRecord(payload) || !isRecord(payload.subscriber) ||
+    !isRecord(payload.subscriber.entitlements)
+  ) {
+    throw new Error("RevenueCat returned a malformed subscriber response");
+  }
+  const subscriber = payload.subscriber;
+  const entitlements = subscriber.entitlements as Record<string, unknown>;
+  const entitlement = Object.hasOwn(entitlements, entitlementId)
+    ? entitlements[entitlementId]
+    : undefined;
 
-  if (!entitlement) {
+  if (entitlement === undefined) {
     return {
       active: false,
       originalTransactionId: null,
       productId: null,
       periodStartedAt: null,
       expiresAt: null,
-      store: Deno.env.get("REVENUECAT_EXPECTED_STORE") ?? "APP_STORE",
-      environment: Deno.env.get("REVENUECAT_EXPECTED_ENVIRONMENT") ??
-        "PRODUCTION",
+      // No subscription source is known. These values must not be invented
+      // from validation configuration, even for an inactive customer.
+      store: "",
+      environment: "",
     };
+  }
+  if (!isRecord(entitlement)) {
+    throw new Error("RevenueCat returned a malformed entitlement");
   }
 
   const productId = typeof entitlement.product_identifier === "string"
@@ -79,39 +104,65 @@ export async function fetchRevenueCatSubscription(
     throw new Error("RevenueCat returned an unexpected product");
   }
 
-  const subscriptions = subscriber?.subscriptions as
-    | Record<string, Record<string, unknown>>
-    | undefined;
-  const subscription = productId ? subscriptions?.[productId] : undefined;
-  // RevenueCat is trusted, but only Apple's stable original transaction ID is
-  // accepted as a billing-account key. Do not substitute app user IDs or
-  // mutable transaction IDs.
-  const originalTransactionId =
-    typeof subscription?.original_transaction_id === "string"
-      ? subscription.original_transaction_id
-      : typeof entitlement.original_transaction_id === "string"
-      ? entitlement.original_transaction_id
-      : null;
-  const expiresAt = optionalDate(entitlement.expires_date);
+  const subscriptions = subscriber.subscriptions;
+  if (
+    !isRecord(subscriptions) || !Object.hasOwn(subscriptions, productId) ||
+    !isRecord(subscriptions[productId])
+  ) {
+    throw new Error("RevenueCat returned no matching subscription record");
+  }
+  const subscription = subscriptions[productId] as Record<string, unknown>;
+  const entitlementExpiresAt = optionalDate(entitlement.expires_date);
+  const subscriptionExpiresAt = optionalDate(subscription.expires_date);
+  // Both records must confirm a paid period. Use the earlier expiration so
+  // inconsistent data can never extend access beyond either source record.
+  const expiresAt = entitlementExpiresAt && subscriptionExpiresAt
+    ? new Date(Math.min(
+      Date.parse(entitlementExpiresAt),
+      Date.parse(subscriptionExpiresAt),
+    )).toISOString()
+    : null;
   // Greenshot v1 supports auto-renewable subscriptions only. A missing
   // expiration must never be interpreted as lifetime access.
   const active = expiresAt !== null &&
     new Date(expiresAt).getTime() > Date.now();
+  const store = typeof subscription.store === "string"
+    ? subscription.store.toUpperCase()
+    : "";
+  const environment = typeof subscription.is_sandbox === "boolean"
+    ? (subscription.is_sandbox ? "SANDBOX" : "PRODUCTION")
+    : "";
+  if (active) {
+    if (!environment || environment !== expectedEnvironment) {
+      throw new Error(
+        "RevenueCat returned an unexpected or missing environment",
+      );
+    }
+    if (store !== "APP_STORE" || store !== expectedStore) {
+      throw new Error("RevenueCat returned an unexpected or missing store");
+    }
+    // API v1 uses normal/trial/intro. Introductory pricing is not sufficient
+    // evidence of a paid period for Greenshot's current products.
+    if (subscription.period_type !== "normal") {
+      throw new Error("RevenueCat returned an ineligible paid period type");
+    }
+    if (subscription.refunded_at != null) {
+      throw new Error("RevenueCat returned a refunded subscription");
+    }
+  }
 
   return {
     active,
-    originalTransactionId,
+    // REST API v1 documents store_transaction_id, not Apple's stable original
+    // transaction ID. Neither it nor any user identifier can replace that ID.
+    originalTransactionId: null,
     productId,
     periodStartedAt: optionalDate(
       subscription?.purchase_date ?? entitlement.purchase_date,
     ),
     expiresAt,
-    store: typeof subscription?.store === "string"
-      ? subscription.store
-      : (Deno.env.get("REVENUECAT_EXPECTED_STORE") ?? "APP_STORE"),
-    environment: typeof subscription?.environment === "string"
-      ? subscription.environment
-      : (Deno.env.get("REVENUECAT_EXPECTED_ENVIRONMENT") ?? "PRODUCTION"),
+    store,
+    environment,
   };
 }
 
@@ -131,7 +182,11 @@ export const GRANTS_PLUS = new Set([
 ]);
 
 /** Events that end access. */
-export const REVOKES_PLUS = new Set(["EXPIRATION", "SUBSCRIPTION_PAUSED", "REFUND"]);
+export const REVOKES_PLUS = new Set([
+  "EXPIRATION",
+  "SUBSCRIPTION_PAUSED",
+  "REFUND",
+]);
 
 /** A new or renewed period resets the monthly allowance. */
 export const RESETS_PERIOD = new Set([

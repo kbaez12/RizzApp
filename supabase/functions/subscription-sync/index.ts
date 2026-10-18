@@ -42,13 +42,15 @@ export default {
 
     const expectedEntitlement = Deno.env.get("REVENUECAT_ENTITLEMENT_ID")!
       .trim();
-    const expectedEnvironment =
-      Deno.env.get("REVENUECAT_EXPECTED_ENVIRONMENT")?.trim();
+    const expectedEnvironment = Deno.env.get("REVENUECAT_EXPECTED_ENVIRONMENT")
+      ?.trim();
     const expectedStore = Deno.env.get("REVENUECAT_EXPECTED_STORE")?.trim();
     if (
       !expectedEnvironment || !expectedStore ||
-      state.environment.toUpperCase() !== expectedEnvironment.toUpperCase() ||
-      state.store.toUpperCase() !== expectedStore.toUpperCase()
+      (state.active &&
+        (state.environment.toUpperCase() !==
+            expectedEnvironment.toUpperCase() ||
+          state.store.toUpperCase() !== expectedStore.toUpperCase()))
     ) {
       return errorJson(
         502,
@@ -85,7 +87,10 @@ export default {
       p_expires_at: state.expiresAt,
       // SERVER_SYNC confirms current entitlement. It is not a billing-period
       // boundary. A missing RevenueCat period start must never become now().
-      p_reset_period: periodResetRequested("SERVER_SYNC", state.periodStartedAt),
+      p_reset_period: periodResetRequested(
+        "SERVER_SYNC",
+        state.periodStartedAt,
+      ),
     });
     if (error) {
       console.log(JSON.stringify({
@@ -93,7 +98,13 @@ export default {
         status: 500,
         category: "rpc_failed",
       }));
-      return errorJson(500, "INTERNAL", "Could not save subscription.", {}, req);
+      return errorJson(
+        500,
+        "INTERNAL",
+        "Could not save subscription.",
+        {},
+        req,
+      );
     }
 
     const { data: usage, error: usageError } = await admin.rpc(
