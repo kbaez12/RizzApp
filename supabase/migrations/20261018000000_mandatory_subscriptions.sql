@@ -6,7 +6,10 @@
 
 create table public.billing_accounts (
   id uuid primary key default gen_random_uuid(),
-  original_transaction_id text not null unique,
+  original_transaction_id text not null unique
+    check (original_transaction_id <> '' and original_transaction_id not like 'pending:%'),
+  ownership_event_at timestamptz,
+  ownership_event_id text,
   user_id uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -16,10 +19,11 @@ create unique index billing_accounts_one_per_user_idx
   on public.billing_accounts(user_id) where user_id is not null;
 
 create table public.billing_account_aliases (
-  app_user_id text primary key,
+  app_user_id text not null,
   billing_account_id uuid not null
     references public.billing_accounts(id) on delete cascade,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  primary key (app_user_id, billing_account_id)
 );
 
 create index billing_account_aliases_account_idx
@@ -48,8 +52,9 @@ create table public.revenuecat_webhook_events (
   original_transaction_id text,
   app_user_id text,
   status text not null
-    check (status in ('applied', 'duplicate', 'ignored', 'rejected', 'stale')),
+    check (status in ('applied', 'duplicate', 'ignored', 'rejected', 'stale', 'pending')),
   reason text,
+  source_aliases text[] not null default array[]::text[],
   received_at timestamptz not null default now()
 );
 
@@ -175,7 +180,8 @@ create function public.apply_revenuecat_event(
   p_is_active boolean,
   p_period_started_at timestamptz,
   p_expires_at timestamptz,
-  p_reset_period boolean
+  p_reset_period boolean,
+  p_source_aliases text[] default array[]::text[]
 )
 returns jsonb
 language plpgsql
@@ -186,144 +192,163 @@ declare
   v_account public.billing_accounts;
   v_entitlement public.subscription_entitlements;
   v_alias text;
+  v_ids uuid[];
+  v_all_aliases text[] := array_append(coalesce(p_aliases, array[]::text[]), p_app_user_id);
+  v_pending boolean;
 begin
   if nullif(p_event_id, '') is null or p_event_at is null then
     raise exception 'event id and timestamp are required';
   end if;
-
+  -- Serializes absent-row resolution, competing transfers and duplicate events.
+  -- AI reservations serialize with ownership changes on the account row lock.
+  perform pg_advisory_xact_lock(718031810);
   insert into public.revenuecat_webhook_events(
-    event_id, event_type, event_at, original_transaction_id, app_user_id, status
+    event_id, event_type, event_at, original_transaction_id, app_user_id,
+    status, source_aliases
   ) values (
     p_event_id, p_event_type, p_event_at, nullif(p_original_transaction_id, ''),
-    nullif(p_app_user_id, ''), 'ignored'
-  )
-  on conflict (event_id) do nothing;
-
-  if not found then
+    nullif(p_app_user_id, ''), 'pending', coalesce(p_source_aliases, array[]::text[])
+  ) on conflict (event_id) do nothing;
+  if not found and exists (
+    select 1 from public.revenuecat_webhook_events
+    where event_id = p_event_id and status <> 'pending'
+  ) then
     return jsonb_build_object('outcome', 'duplicate');
   end if;
 
-  if nullif(p_original_transaction_id, '') is not null then
-    -- subscription-sync creates a provisional account because RevenueCat's
-    -- subscriber REST API does not expose Apple's original_transaction_id.
-    -- The first lifecycle webhook upgrades that row in place, preserving
-    -- usage while removing the provisional identity.
-    if p_user_id is not null
-       and p_original_transaction_id not like 'pending:%' then
-      update public.billing_accounts
-      set original_transaction_id = p_original_transaction_id,
-          updated_at = now()
-      where user_id = p_user_id
-        and original_transaction_id = 'pending:' || p_user_id::text
-        and not exists (
-          select 1 from public.billing_accounts
-          where original_transaction_id = p_original_transaction_id
-        )
-      returning * into v_account;
+  if p_event_type = 'SERVER_SYNC' then
+    -- Sync cannot create an account, follow historical aliases or move ownership.
+    select * into v_account from public.billing_accounts
+    where user_id = p_user_id for update;
+    if not found then
+      return jsonb_build_object('outcome', 'pending_verification');
     end if;
-
-    if v_account.id is null then
-      insert into public.billing_accounts(original_transaction_id)
-      values (p_original_transaction_id)
-    on conflict (original_transaction_id) do update
-        set updated_at = now()
-    returning * into v_account;
+    select * into v_entitlement from public.subscription_entitlements
+    where billing_account_id = v_account.id;
+    if not found or (p_is_active and
+        (v_entitlement.product_id is distinct from p_product_id or
+         v_entitlement.environment <> p_environment or
+         v_entitlement.store <> p_store)) then
+      update public.subscription_entitlements set is_active = false
+      where billing_account_id = v_account.id;
+      return jsonb_build_object('outcome', 'pending_verification');
     end if;
-  else
-    select ba.* into v_account
-    from public.billing_account_aliases a
-    join public.billing_accounts ba on ba.id = a.billing_account_id
-    where a.app_user_id = any(coalesce(p_aliases, array[]::text[]))
-       or a.app_user_id = p_app_user_id
-    limit 1
-    for update of ba;
-  end if;
-
-  if not found then
-    update public.revenuecat_webhook_events
-    set status = 'ignored', reason = 'billing_account_not_resolved'
+    update public.subscription_entitlements
+    set is_active = p_is_active, expires_at = p_expires_at, updated_at = now()
+    where billing_account_id = v_account.id;
+    -- Sync never advances lifecycle ordering or resets spending.
+    update public.revenuecat_webhook_events set status = 'applied'
     where event_id = p_event_id;
-    return jsonb_build_object('outcome', 'ignored');
+    return jsonb_build_object('outcome', 'applied',
+      'usage', public.user_usage_status(p_user_id));
   end if;
 
-  select * into v_entitlement
-  from public.subscription_entitlements
-  where billing_account_id = v_account.id
-  for update;
+  if p_event_type = 'TRANSFER' then
+    -- Only source aliases identify the transferred purchase. Keep all historical
+    -- associations so ambiguity is detected instead of selecting an arbitrary row.
+    select array_agg(distinct billing_account_id) into v_ids
+    from public.billing_account_aliases
+    where app_user_id = any(coalesce(p_source_aliases, array[]::text[]));
+    if coalesce(cardinality(v_ids), 0) <> 1 or p_user_id is null then
+      update public.billing_accounts set user_id = null, updated_at = now()
+      where id = any(v_ids);
+      update public.revenuecat_webhook_events
+      set reason = 'ambiguous_or_missing_transfer_ownership'
+      where event_id = p_event_id;
+      return jsonb_build_object('outcome', 'pending_verification');
+    end if;
+    select * into v_account from public.billing_accounts
+    where id = v_ids[1] for update;
+    if p_event_at = v_account.ownership_event_at
+       and p_event_id <> v_account.ownership_event_id then
+      -- Event IDs are opaque: lexical order cannot establish which of two
+      -- simultaneous ownership events happened last.
+      update public.billing_accounts set user_id = null where id = v_account.id;
+      return jsonb_build_object('outcome', 'pending_verification');
+    end if;
+    if (p_event_at, p_event_id) <=
+       (v_account.ownership_event_at, v_account.ownership_event_id) then
+      update public.revenuecat_webhook_events set status = 'stale'
+      where event_id = p_event_id;
+      return jsonb_build_object('outcome', 'stale');
+    end if;
+    select * into v_entitlement from public.subscription_entitlements
+    where billing_account_id = v_account.id;
+    if not found or (p_is_active and
+        (v_entitlement.product_id is distinct from p_product_id or
+         v_entitlement.environment <> p_environment or
+         v_entitlement.store <> p_store)) then
+      update public.billing_accounts set user_id = null where id = v_account.id;
+      return jsonb_build_object('outcome', 'pending_verification');
+    end if;
+    -- A different destination purchase stays separate, with its usage intact.
+    update public.billing_accounts set user_id = null, updated_at = now()
+    where user_id = p_user_id and id <> v_account.id;
+    update public.billing_accounts
+    set user_id = p_user_id, ownership_event_at = p_event_at,
+        ownership_event_id = p_event_id, updated_at = now()
+    where id = v_account.id;
+    update public.subscription_entitlements
+    set is_active = p_is_active, expires_at = p_expires_at, updated_at = now()
+    where billing_account_id = v_account.id;
+    foreach v_alias in array v_all_aliases loop
+      if nullif(v_alias, '') is not null then
+        insert into public.billing_account_aliases(app_user_id, billing_account_id)
+        values (v_alias, v_account.id) on conflict do nothing;
+      end if;
+    end loop;
+    update public.revenuecat_webhook_events set status = 'applied', reason = 'ownership_updated'
+    where event_id = p_event_id;
+    return jsonb_build_object('outcome', 'applied',
+      'usage', public.user_usage_status(p_user_id));
+  end if;
 
-  if p_event_type not in ('TRANSFER', 'SUBSCRIBER_ALIAS')
-     and found and (p_event_at, p_event_id) <=
+  if p_event_type = 'SUBSCRIBER_ALIAS' or
+     nullif(p_original_transaction_id, '') is null or
+     p_original_transaction_id like 'pending:%' then
+    return jsonb_build_object('outcome', 'pending_verification');
+  end if;
+  -- Only a trusted lifecycle transaction can create an allowance.
+  insert into public.billing_accounts(original_transaction_id)
+  values (p_original_transaction_id)
+  on conflict (original_transaction_id) do update set updated_at = now()
+  returning * into v_account;
+  select * into v_entitlement from public.subscription_entitlements
+  where billing_account_id = v_account.id for update;
+  if found and (p_event_at, p_event_id) <=
       (v_entitlement.last_event_at, v_entitlement.last_event_id) then
-    update public.revenuecat_webhook_events
-    set status = 'stale', reason = 'older_than_applied_state'
+    update public.revenuecat_webhook_events set status = 'stale'
     where event_id = p_event_id;
     return jsonb_build_object('outcome', 'stale');
   end if;
-
-  if p_user_id is not null then
-    -- RevenueCat transfers move the stable Apple billing account instead of
-    -- creating a second allowance. The partial unique index prevents one
-    -- Supabase user from owning two active billing accounts.
-    insert into public.user_usage(
-      billing_account_id, analyses_used, refinements_remaining,
-      period_started_at, period_ends_at
-    )
-    select
-      v_account.id, u.analyses_used, u.refinements_remaining,
-      u.period_started_at, u.period_ends_at
-    from public.billing_accounts prior
-    join public.user_usage u on u.billing_account_id = prior.id
-    where prior.user_id = p_user_id and prior.id <> v_account.id
-    on conflict (billing_account_id) do update set
-      -- Never let a restore/transfer reset subscriber spending protection.
-      analyses_used = greatest(
-        public.user_usage.analyses_used, excluded.analyses_used
-      ),
-      refinements_remaining = least(
-        public.user_usage.refinements_remaining,
-        excluded.refinements_remaining
-      ),
-      period_started_at = greatest(
-        public.user_usage.period_started_at, excluded.period_started_at
-      ),
-      period_ends_at = greatest(
-        public.user_usage.period_ends_at, excluded.period_ends_at
-      ),
-      updated_at = now();
-
-    update public.billing_accounts
-    set user_id = null, updated_at = now()
-    where user_id = p_user_id and id <> v_account.id;
-
-    update public.billing_accounts
-    set user_id = p_user_id, updated_at = now()
-    where id = v_account.id
-    returning * into v_account;
+  select exists (
+    select 1 from public.revenuecat_webhook_events e
+    where e.event_type = 'TRANSFER' and e.status = 'pending'
+      and e.source_aliases && v_all_aliases
+  ) into v_pending;
+  -- Lifecycle events cannot reclaim an account after transfer or detach.
+  -- A pending early transfer blocks a late purchase from unlocking its source.
+  if v_account.ownership_event_at is null and not v_pending and p_user_id is not null then
+    if not exists (select 1 from public.billing_accounts
+                   where user_id = p_user_id and id <> v_account.id) then
+      update public.billing_accounts
+      set user_id = p_user_id, ownership_event_at = p_event_at,
+          ownership_event_id = p_event_id where id = v_account.id;
+    end if;
   end if;
-
-  foreach v_alias in array coalesce(p_aliases, array[]::text[]) loop
+  foreach v_alias in array v_all_aliases loop
     if nullif(v_alias, '') is not null then
       insert into public.billing_account_aliases(app_user_id, billing_account_id)
-      values (v_alias, v_account.id)
-      on conflict (app_user_id) do update
-        set billing_account_id = excluded.billing_account_id;
+      values (v_alias, v_account.id) on conflict do nothing;
     end if;
   end loop;
-
-  if nullif(p_app_user_id, '') is not null then
-    insert into public.billing_account_aliases(app_user_id, billing_account_id)
-    values (p_app_user_id, v_account.id)
-    on conflict (app_user_id) do update
-      set billing_account_id = excluded.billing_account_id;
-  end if;
-
-  if p_event_type in ('TRANSFER', 'SUBSCRIBER_ALIAS') then
-    update public.revenuecat_webhook_events
-    set status = 'applied', reason = 'ownership_updated'
+  if v_account.ownership_event_at is not null and
+     (v_account.user_id is distinct from p_user_id or
+      (p_event_at, p_event_id) <=
+      (v_account.ownership_event_at, v_account.ownership_event_id)) then
+    update public.revenuecat_webhook_events set status = 'stale'
     where event_id = p_event_id;
-    return jsonb_build_object(
-      'outcome', 'applied', 'usage', public.user_usage_status(p_user_id)
-    );
+    return jsonb_build_object('outcome', 'stale');
   end if;
 
   insert into public.subscription_entitlements(
@@ -589,7 +614,7 @@ revoke execute on function public.user_usage_status(uuid)
   from public, anon, authenticated;
 revoke execute on function public.apply_revenuecat_event(
   text, text, timestamptz, text, text, uuid, text[], text, text, text, text,
-  boolean, timestamptz, timestamptz, boolean
+  boolean, timestamptz, timestamptz, boolean, text[]
 ) from public, anon, authenticated;
 revoke execute on function public.release_user_reservation(uuid)
   from public, anon, authenticated;
@@ -603,7 +628,7 @@ revoke execute on function public.get_user_usage(uuid)
 grant execute on function public.user_usage_status(uuid) to service_role;
 grant execute on function public.apply_revenuecat_event(
   text, text, timestamptz, text, text, uuid, text[], text, text, text, text,
-  boolean, timestamptz, timestamptz, boolean
+  boolean, timestamptz, timestamptz, boolean, text[]
 ) to service_role;
 grant execute on function public.release_user_reservation(uuid) to service_role;
 grant execute on function public.reserve_user_usage(uuid, uuid, text)

@@ -1,3 +1,21 @@
+import { isUserId } from "./auth.ts";
+
+/** Aliases are historical identifiers, not an ordered owner preference list.
+ * Transfers must use destination identities exclusively. */
+export function revenueCatOwnerCandidates(
+  type: string,
+  appUserId: string,
+  aliases: string[],
+  transferredTo: string[],
+): string[] {
+  const candidates = type === "TRANSFER"
+    ? transferredTo
+    : isUserId(appUserId)
+    ? [appUserId]
+    : aliases;
+  return [...new Set(candidates.filter(isUserId))];
+}
+
 export interface TrustedSubscriptionState {
   active: boolean;
   originalTransactionId: string | null;

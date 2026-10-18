@@ -63,18 +63,13 @@ export default {
 
     const now = new Date().toISOString();
     const eventId = `sync:${userId}:${crypto.randomUUID()}`;
-    // RevenueCat's v1 subscriber API confirms current entitlement but does
-    // not expose Apple's original_transaction_id. Use a clearly provisional
-    // key so access can unlock immediately; the first trusted lifecycle
-    // webhook replaces it in-place with the stable Apple transaction ID.
-    const billingKey = state.active
-      ? state.originalTransactionId ?? `pending:${userId}`
-      : "";
-    const { error } = await admin.rpc("apply_revenuecat_event", {
+    // Subscriber v1 verifies entitlement, not stable purchase ownership.
+    // SQL may refresh only an already-owned, webhook-verified account.
+    const { data, error } = await admin.rpc("apply_revenuecat_event", {
       p_event_id: eventId,
       p_event_type: "SERVER_SYNC",
       p_event_at: now,
-      p_original_transaction_id: billingKey,
+      p_original_transaction_id: "",
       p_app_user_id: userId,
       p_user_id: userId,
       p_aliases: [userId],
@@ -113,6 +108,16 @@ export default {
     );
     if (usageError || !usage) {
       return errorJson(500, "INTERNAL", "Could not load usage.", {}, req);
+    }
+    if (data?.outcome === "pending_verification") {
+      return json(200, {
+        subscribed: false,
+        remaining: 0,
+        limit: 150,
+        refinements_remaining: 0,
+        verification_status: "pending_verification",
+        retry_after_seconds: 5,
+      }, req);
     }
     return json(200, usage, req);
   }),

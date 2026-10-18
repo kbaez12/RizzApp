@@ -13,13 +13,13 @@
 
 import { withSupabase } from "npm:@supabase/server@1";
 import { errorJson, json } from "../_shared/responses.ts";
-import { isUserId } from "../_shared/auth.ts";
 import {
   classifyRevenueCatEvent,
   constantTimeEqual,
   fetchRevenueCatSubscription,
   OWNERSHIP_EVENTS,
   periodResetRequested,
+  revenueCatOwnerCandidates,
 } from "../_shared/revenuecat.ts";
 
 function strings(value: unknown): string[] {
@@ -79,8 +79,17 @@ export default {
     const expectedEnvironment =
       Deno.env.get("REVENUECAT_EXPECTED_ENVIRONMENT")?.trim();
     const expectedStore = Deno.env.get("REVENUECAT_EXPECTED_STORE")?.trim();
-    const environment = String(event.environment ?? "");
-    const store = String(event.store ?? "");
+    // TRANSFER documents store/environment as optional. Missing fields are
+    // constrained by the destination lookup and existing source account in SQL.
+    // Explicit unexpected values are still rejected.
+    const environment = String(
+      event.environment ??
+        (type === "TRANSFER" ? expectedEnvironment : ""),
+    );
+    const store = String(
+      event.store ??
+        (type === "TRANSFER" ? expectedStore : ""),
+    );
     const entitlementIds = strings(event.entitlement_ids);
 
     const log = (status: number, note: string, tier?: string) =>
@@ -183,22 +192,22 @@ export default {
       );
     }
 
-    // Prefer the transfer destination as owner, then the canonical/current
-    // app user id. A UUID is accepted only if it exists in auth.users.
-    const ownerCandidates = [
-      ...strings(event.transferred_to),
+    // Never fall back to a transfer source or select the first of several
+    // possible owners. Missing auth users must not hide ownership ambiguity.
+    const ownerCandidates = revenueCatOwnerCandidates(
+      type,
       appUserId,
-      originalAppUserId,
-      ...aliases,
-    ].filter(isUserId);
+      aliases,
+      strings(event.transferred_to),
+    );
     let userId: string | null = null;
-    for (const candidate of ownerCandidates) {
+    if (ownerCandidates.length === 1) {
+      const candidate = ownerCandidates[0];
       const { data, error } = await admin.auth.admin.getUserById(
         candidate,
       );
       if (!error && data.user) {
         userId = candidate;
-        break;
       }
     }
 
@@ -206,10 +215,21 @@ export default {
     // server-to-server subscriber lookup supplies current entitlement truth.
     // This makes delayed/out-of-order webhooks converge instead of blindly
     // applying the last payload delivered.
-    if (userId && !OWNERSHIP_EVENTS.has(type)) {
+    if (userId) {
       try {
         const current = await fetchRevenueCatSubscription(userId);
         active = current.active;
+        // A current different product cannot verify this lifecycle purchase.
+        if (
+          !OWNERSHIP_EVENTS.has(type) && current.active &&
+          current.productId !== productId
+        ) {
+          return errorJson(
+            503,
+            "RECONCILIATION_UNAVAILABLE",
+            "Purchase identity is ambiguous.",
+          );
+        }
         productId = current.productId ?? productId;
         expiresAt = current.expiresAt;
         periodStartedAt = current.periodStartedAt ?? periodStartedAt;
@@ -220,6 +240,17 @@ export default {
           "Could not reconcile subscription state.",
         );
       }
+    } else {
+      // Persist unresolved transfer barriers in SQL; lifecycle grants must
+      // have one verified owner and a paid-period subscriber lookup.
+      if (!OWNERSHIP_EVENTS.has(type)) {
+        return errorJson(
+          503,
+          "RECONCILIATION_UNAVAILABLE",
+          "Subscription owner is ambiguous.",
+        );
+      }
+      active = false;
     }
     if (!OWNERSHIP_EVENTS.has(type) && !expectedProducts.has(productId)) {
       await ledgerWithoutApplying("rejected", "reconciled_unexpected_product");
@@ -246,6 +277,7 @@ export default {
       p_app_user_id: appUserId,
       p_user_id: userId,
       p_aliases: aliases,
+      p_source_aliases: strings(event.transferred_from),
       p_entitlement_id: expectedEntitlement,
       p_product_id: productId || null,
       p_environment: environment,
@@ -259,6 +291,14 @@ export default {
       log(500, "rpc_failed", active ? "plus" : "none");
       // Non-2xx makes RevenueCat retry, which is what we want.
       return errorJson(500, "INTERNAL", "Could not apply entitlement.");
+    }
+
+    if (data?.outcome === "pending_verification") {
+      return errorJson(
+        503,
+        "OWNERSHIP_PENDING",
+        "Billing ownership awaits reconciliation.",
+      );
     }
 
     log(200, String(data?.outcome ?? "applied"), active ? "plus" : "none");
