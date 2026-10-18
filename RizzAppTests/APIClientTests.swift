@@ -75,9 +75,9 @@ final class APIClientTests: XCTestCase {
     func testAnonymousAuthCreatesSessionAndReturnsBearerToken() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        var captured: URLRequest?
+        let capture = SignupRequestCapture()
         MockURLProtocol.handler = { request in
-            captured = request
+            capture.record(request)
             return (200, Data("""
             {
               "access_token": "anonymous-jwt",
@@ -98,6 +98,7 @@ final class APIClientTests: XCTestCase {
         )
 
         let user = try await auth.authenticatedUser()
+        let (captured, capturedBody) = capture.snapshot()
 
         XCTAssertEqual(user.id, "11111111-2222-4333-8444-555555555555")
         XCTAssertEqual(user.accessToken, "anonymous-jwt")
@@ -107,7 +108,7 @@ final class APIClientTests: XCTestCase {
             captured?.value(forHTTPHeaderField: "Authorization"),
             "Bearer sb_publishable_test"
         )
-        XCTAssertEqual(captured?.httpBody, Data("{}".utf8))
+        XCTAssertEqual(capturedBody, Data("{}".utf8))
     }
 
     func testRefreshServerErrorPreservesAnonymousIdentity() async {
@@ -362,6 +363,46 @@ final class APIClientTests: XCTestCase {
             XCTFail("Expected invalidResponse")
         } catch APIError.invalidResponse {
             // expected
+        }
+    }
+}
+
+/// Capture the body while URLProtocol owns the request, before responding.
+private final class SignupRequestCapture {
+    private let lock = NSLock()
+    private var request: URLRequest?
+    private var body: Data?
+
+    func record(_ request: URLRequest) {
+        let body = Self.readBody(from: request)
+        lock.lock()
+        defer { lock.unlock() }
+        self.request = request
+        self.body = body
+    }
+
+    func snapshot() -> (URLRequest?, Data?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (request, body)
+    }
+
+    private static func readBody(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+
+        var body = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 {
+                XCTFail("Failed to read signup request body: \(String(describing: stream.streamError))")
+                return nil
+            }
+            if count == 0 { return body }
+            body.append(contentsOf: buffer.prefix(count))
         }
     }
 }
